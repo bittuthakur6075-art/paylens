@@ -94,36 +94,22 @@ export const preprocessImageForOCR = async (imageSource) => {
         let width = img.width || 800;
         let height = img.height || 1000;
         
-        // Scale to optimal OCR dimensions (1200-1600px width)
-        if (width < 1000) {
-          height = Math.round((height * 1200) / width);
-          width = 1200;
-        } else if (width > 1600) {
-          height = Math.round((height * 1600) / width);
-          width = 1600;
+        // Scale small images up for sharp OCR recognition (1200-1600px width)
+        if (width < 1200) {
+          height = Math.round((height * 1400) / width);
+          width = 1400;
+        } else if (width > 2000) {
+          height = Math.round((height * 1800) / width);
+          width = 1800;
         }
         canvas.width = width;
         canvas.height = height;
 
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
         ctx.drawImage(img, 0, 0, width, height);
 
-        // Advanced contrast stretching and binarization preparation
-        const imgData = ctx.getImageData(0, 0, width, height);
-        const d = imgData.data;
-        for (let i = 0; i < d.length; i += 4) {
-          // Standard ITU-R luminance weights
-          const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-          // Boost contrast moderately for sharp character edges without blowing out soft fonts
-          const contrast = 1.15;
-          const adjusted = ((gray / 255 - 0.5) * contrast + 0.5) * 255;
-          const finalVal = Math.min(255, Math.max(0, adjusted));
-          d[i] = finalVal;
-          d[i + 1] = finalVal;
-          d[i + 2] = finalVal;
-        }
-        ctx.putImageData(imgData, 0, 0);
-
-        // PNG preserves crisp character boundaries without JPEG compression noise
+        // Keep crisp PNG with natural anti-aliasing preserved so ₹ symbol does not merge into 2
         resolve(canvas.toDataURL('image/png'));
       } catch (err) {
         resolve(normalized);
@@ -353,38 +339,87 @@ export const parsePaymentText = (text) => {
     const num = parseFloat(rawVal);
     if (!isNaN(num) && num > 0 && num < 10000000 && num !== 2024 && num !== 2025 && num !== 2026 && num !== 2027) {
       const hasDecimals = cMatch[1].includes('.');
-      amountCandidates.push({ val: num, priority: hasDecimals ? 45 : 35 });
+      amountCandidates.push({ val: num, priority: hasDecimals ? 52 : 42, source: 'currency' });
     }
   }
 
-  // Pass 2: Context phrases like "Paid 72.00", "Amount: 1,050", "Payment of 72"
+  // Pass 2: Standalone single character (2, 7, z, ?, ~) separated by space from amount
+  // (Detects when Tesseract recognizes ₹ as a standalone 2/z: "2 72.00", "2 500.00")
+  const spaceCurrencyRegex = /(?:^|\s)[27zZ\?\*~_=]\s+([0-9]{1,3}(?:,[0-9]{2,3})*(?:\.[0-9]{1,2})?|[0-9]{1,6}(?:\.[0-9]{1,2})?)(?![0-9])/gi;
+  let scMatch;
+  while ((scMatch = spaceCurrencyRegex.exec(text)) !== null) {
+    const rawVal = scMatch[1].replace(/,/g, '');
+    const num = parseFloat(rawVal);
+    if (!isNaN(num) && num > 0 && num < 10000000 && num !== 2024 && num !== 2025 && num !== 2026 && num !== 2027) {
+      amountCandidates.push({ val: num, priority: 50, source: 'space-currency' });
+    }
+  }
+
+  // Pass 3: Debit & Payment detail phrases (e.g. "Debited from SBI: ₹72", "Payment of 72.00")
+  const debitRegex = /(?:debited\s+from|paid\s+to|payment\s+of|amount\s+is|total\s+amount)[^0-9\n\r]{0,35}([0-9]{1,3}(?:,[0-9]{2,3})*(?:\.[0-9]{1,2})?|[0-9]{1,6}(?:\.[0-9]{1,2})?)(?![0-9])/gi;
+  let dMatch;
+  while ((dMatch = debitRegex.exec(text)) !== null) {
+    const rawVal = dMatch[1].replace(/,/g, '');
+    const num = parseFloat(rawVal);
+    if (!isNaN(num) && num > 0 && num < 10000000 && num !== 2024 && num !== 2025 && num !== 2026 && num !== 2027) {
+      amountCandidates.push({ val: num, priority: 47, source: 'debit-context' });
+    }
+  }
+
+  // Pass 4: General context phrases like "Paid 72.00", "Amount: 1,050"
   const contextRegex = /(?:paid|amount|total|sent|received|transferred|transfer|payment|debited|credited)\s*(?:is|of|[:\-])?\s*[^\w\s]?\s*([0-9]{1,3}(?:,[0-9]{2,3})*(?:\.[0-9]{1,2})?|[0-9]{1,6}(?:\.[0-9]{1,2})?)(?![0-9])/gi;
   let ctxMatch;
   while ((ctxMatch = contextRegex.exec(text)) !== null) {
     const rawVal = ctxMatch[1].replace(/,/g, '');
     const num = parseFloat(rawVal);
     if (!isNaN(num) && num > 0 && num < 10000000 && num !== 2024 && num !== 2025 && num !== 2026 && num !== 2027) {
-      amountCandidates.push({ val: num, priority: 38 });
+      amountCandidates.push({ val: num, priority: 38, source: 'context' });
     }
   }
 
-  // Pass 3: Standalone numbers on receipt lines (especially in top 10 lines)
+  // Pass 5: Standalone numbers on receipt lines (especially in top 10 lines)
   lines.forEach((line, idx) => {
+    // Check if line has a leading space-separated symbol "2 72.00"
+    const parts = line.split(/\s+/);
+    if (parts.length === 2 && (parts[0] === '2' || parts[0] === '7' || parts[0] === 'z' || parts[0] === '?')) {
+      const cleanPart = parts[1].replace(/^[^\w\d]+|[^\w\d]+$/g, '');
+      const num = parseFloat(cleanPart.replace(/,/g, ''));
+      if (!isNaN(num) && num > 0 && num < 10000000) {
+        amountCandidates.push({ val: num, priority: idx < 6 ? 49 : 35, source: 'split-line' });
+      }
+    }
+
     const cleanLine = line.replace(/^[^\w\d₹â‚¹]+|[^\w\d]+$/g, '').trim();
     if (/^[0-9]{1,3}(?:,[0-9]{2,3})*\.[0-9]{2}$/.test(cleanLine) || /^[0-9]{1,6}\.[0-9]{2}$/.test(cleanLine)) {
       const num = parseFloat(cleanLine.replace(/,/g, ''));
       if (!isNaN(num) && num > 0 && num < 10000000) {
-        amountCandidates.push({ val: num, priority: idx < 8 ? 40 : 25 });
+        amountCandidates.push({ val: num, priority: idx < 8 ? 36 : 25, source: 'standalone-decimal' });
       }
     } else if (/^[0-9]{1,5}$/.test(cleanLine)) {
       const num = parseFloat(cleanLine);
       if (!isNaN(num) && num > 0 && num < 10000000 && num !== 2024 && num !== 2025 && num !== 2026 && num !== 2027) {
         if (idx < 6) {
-          amountCandidates.push({ val: num, priority: 28 });
+          amountCandidates.push({ val: num, priority: 28, source: 'standalone-int' });
         }
       }
     }
   });
+
+  // Cross-reference: If candidate A starts with '2' (misread ₹) and candidate B is the true remaining number
+  // e.g. Candidate A = 272.00 and Candidate B = 72.00, or 2500 and 500
+  for (let i = 0; i < amountCandidates.length; i++) {
+    for (let j = 0; j < amountCandidates.length; j++) {
+      if (i === j) continue;
+      const c1 = amountCandidates[i];
+      const c2 = amountCandidates[j];
+      const s1 = String(c1.val);
+      const s2 = String(c2.val);
+      if (s1.startsWith('2') && (s1.slice(1) === s2 || (c1.val - 200 === c2.val) || (c1.val - 2000 === c2.val)) && c2.val > 0) {
+        c2.priority += 35; // True amount validated by secondary line
+        c1.priority -= 35; // Downrank the prefixed 2
+      }
+    }
+  }
 
   if (amountCandidates.length > 0) {
     amountCandidates.sort((a, b) => b.priority - a.priority || b.val - a.val);
@@ -668,8 +703,8 @@ Examine this payment receipt screenshot (PhonePe, Google Pay, Paytm, BHIM, CRED,
 }
 Output strictly valid JSON only. Do not include markdown codeblocks or explanation.`;
 
-  // Try gemini-2.0-flash first, then gemini-1.5-flash
-  const models = ['gemini-2.0-flash', 'gemini-1.5-flash'];
+  // Ultra-reliable active Google AI Studio models with automatic fallback
+  const models = ['gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-3.5-flash-lite', 'gemini-3.8-flash'];
   let lastError = null;
 
   for (const model of models) {
