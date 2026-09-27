@@ -280,41 +280,54 @@ export const parsePaymentText = (text) => {
   // -------------------------------------------------------------
   const amountCandidates = [];
 
-  // Pass 1: Explicit currency symbol or prefix (₹, Rs, INR, *, z, ¥, etc.)
-  const currencyRegex = /(?:[₹₹*zZ¥€¢=:]|rs\.?|inr)\s*([0-9]{1,3}(?:,[0-9]{2,3})*(?:\.[0-9]{1,2})?|[0-9]{1,7}(?:\.[0-9]{1,2})?)/gi;
+  // Pass 1: Explicit currency symbol or prefix (₹, Rs, INR)
+  // Must NOT match digits that are part of longer numbers like UTR or account numbers!
+  const currencyRegex = /(?:₹|rs\.?|inr)\s*([0-9]{1,3}(?:,[0-9]{2,3})*(?:\.[0-9]{1,2})?|[0-9]{1,6}(?:\.[0-9]{1,2})?)(?![0-9])/gi;
   let cMatch;
   while ((cMatch = currencyRegex.exec(text)) !== null) {
     const rawVal = cMatch[1].replace(/,/g, '');
     const num = parseFloat(rawVal);
     if (!isNaN(num) && num > 0 && num < 10000000) {
-      amountCandidates.push({ val: num, priority: 10 });
+      const hasDecimals = cMatch[1].includes('.');
+      amountCandidates.push({ val: num, priority: hasDecimals ? 35 : 25 });
     }
   }
 
-  // Pass 2: Context phrases like "Paid 72.00", "Amount: 1,050"
-  const contextRegex = /(?:paid|amount|total|sent|received|transferred)\s*(?:is|of|[:\-])?\s*[₹*zRs.]?\s*([0-9]{1,3}(?:,[0-9]{2,3})*(?:\.[0-9]{1,2})?|[0-9]{1,7}\.[0-9]{2})/gi;
+  // Pass 2: Common OCR misread characters for ₹ (*, z, ¥, etc.) when followed by decimals
+  const ocrMisreadRegex = /(?:[*zZ¥€¢])\s*([0-9]{1,3}(?:,[0-9]{2,3})*\.[0-9]{2}|[0-9]{1,6}\.[0-9]{2})(?![0-9])/gi;
+  let ocrMatch;
+  while ((ocrMatch = ocrMisreadRegex.exec(text)) !== null) {
+    const rawVal = ocrMatch[1].replace(/,/g, '');
+    const num = parseFloat(rawVal);
+    if (!isNaN(num) && num > 0 && num < 10000000) {
+      amountCandidates.push({ val: num, priority: 20 });
+    }
+  }
+
+  // Pass 3: Context phrases like "Paid 72.00", "Amount: 1,050"
+  const contextRegex = /(?:paid|amount|total|sent|received|transferred)\s*(?:is|of|[:\-])?\s*[₹*zRs.]?\s*([0-9]{1,3}(?:,[0-9]{2,3})*(?:\.[0-9]{1,2})?|[0-9]{1,6}\.[0-9]{2})(?![0-9])/gi;
   let ctxMatch;
   while ((ctxMatch = contextRegex.exec(text)) !== null) {
     const rawVal = ctxMatch[1].replace(/,/g, '');
     const num = parseFloat(rawVal);
     if (!isNaN(num) && num > 0 && num < 10000000) {
-      amountCandidates.push({ val: num, priority: 8 });
+      amountCandidates.push({ val: num, priority: 15 });
     }
   }
 
-  // Pass 3: Standalone line with decimal currency e.g. "72.00" or "1,050.00"
+  // Pass 4: Standalone line with decimal currency e.g. "72.00" or "1,050.00"
   lines.forEach((line) => {
-    const cleanLine = line.replace(/[₹*zRs.]/gi, '').trim();
-    if (/^[0-9]{1,3}(?:,[0-9]{2,3})*\.[0-9]{2}$/.test(cleanLine) || /^[0-9]{1,7}\.[0-9]{2}$/.test(cleanLine)) {
+    const cleanLine = line.replace(/^[₹*zRs.\s]+|[,\s]+$/gi, '').trim();
+    if (/^[0-9]{1,3}(?:,[0-9]{2,3})*\.[0-9]{2}$/.test(cleanLine) || /^[0-9]{1,6}\.[0-9]{2}$/.test(cleanLine)) {
       const num = parseFloat(cleanLine.replace(/,/g, ''));
       if (!isNaN(num) && num > 0 && num < 10000000) {
-        amountCandidates.push({ val: num, priority: 9 });
+        amountCandidates.push({ val: num, priority: 18 });
       }
     }
   });
 
   if (amountCandidates.length > 0) {
-    // Sort by priority, then by value (largest value that isn't a UTR/year)
+    // Sort by priority descending
     amountCandidates.sort((a, b) => b.priority - a.priority || b.val - a.val);
     result.amount = formatAmountValue(amountCandidates[0].val);
   }
@@ -457,12 +470,14 @@ export const parsePaymentText = (text) => {
   // 6. Extract Date & Time
   // -------------------------------------------------------------
   const datePatterns = [
-    // "16 Aug 2026, 04:21 PM" or "27 Sep 2026 at 7:45 PM"
-    /\b([0-3]?[0-9]\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+[0-9]{4}(?:,?\s*(?:at\s+)?[0-1]?[0-9]:[0-5][0-9](?::[0-5][0-9])?\s*(?:am|pm)?)?)/i,
-    // "07:45 PM on 27 Sep 2026" (PhonePe)
-    /\b([0-1]?[0-9]:[0-5][0-9](?::[0-5][0-9])?\s*(?:am|pm)?\s+(?:on|at)\s+[0-3]?[0-9]\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+[0-9]{4})/i,
-    // "27 Sep, 07:45 PM" (Paytm)
-    /\b([0-3]?[0-9]\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*,?\s+[0-1]?[0-9]:[0-5][0-9]\s*(?:am|pm)?)/i,
+    // "07:45 PM on 27 Sep 2026" or "07:45 PM, 27 Sep 2026" (PhonePe format)
+    /\b([0-1]?[0-9]:[0-5][0-9](?::[0-5][0-9])?\s*(?:am|pm)?\s*(?:on|,|\s+at\s+)?\s*[0-3]?[0-9]\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+[0-9]{4})/i,
+    // "27 Sep 2026 at 7:45 PM" or "27 Sep 2026, 07:45 PM"
+    /\b([0-3]?[0-9]\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+[0-9]{4}(?:,?\s*(?:at\s+)?[0-1]?[0-9]:[0-5][0-9](?::[0-5][0-9])?\s*(?:am|pm)?)?)/i,
+    // "Sep 27, 2026, 6:30 PM" (Google Pay format)
+    /\b((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+[0-3]?[0-9],?\s+[0-9]{4}(?:,?\s*(?:at\s+)?[0-1]?[0-9]:[0-5][0-9](?::[0-5][0-9])?\s*(?:am|pm)?)?)/i,
+    // "27 Sep, 07:45 PM" (Paytm format)
+    /\b([0-3]?[0-9]\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*,?\s+[0-1]?[0-9]:[0-5][0-9]\s*(?:am|pm)?)/i,
     // "27/09/2026, 19:45"
     /\b([0-3]?[0-9][/-][0-1]?[0-9][/-][0-9]{2,4}(?:,?\s+[0-1]?[0-9]:[0-5][0-9](?::[0-5][0-9])?\s*(?:am|pm)?)?)/i,
     // "Today, 7:45 PM"
