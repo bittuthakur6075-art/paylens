@@ -14,10 +14,15 @@ const COMMON_APPS = [
   'CRED',
   'BHIM',
   'Amazon Pay',
-  'HDFC Bank',
+  'WhatsApp Pay',
   'SBI',
+  'HDFC Bank',
   'ICICI Bank',
   'Axis Bank',
+  'Kotak Bank',
+  'PNB',
+  'Bank of Baroda',
+  'Canara Bank',
   'Other UPI'
 ];
 
@@ -131,10 +136,10 @@ export default function UploadForm({
       // Update form state with parsed values
       setFormData(prev => ({
         ...prev,
-        appName: extracted.appName !== 'Unknown' ? extracted.appName : prev.appName,
+        appName: (extracted.appName && extracted.appName !== 'Unknown') ? extracted.appName : prev.appName,
         type: extracted.type || prev.type,
-        from: extracted.from || prev.from,
-        to: extracted.to || prev.to,
+        from: (extracted.from !== undefined && extracted.from !== '') ? extracted.from : (extracted.type === 'Sent' ? 'You (Self)' : prev.from),
+        to: (extracted.to !== undefined && extracted.to !== '') ? extracted.to : (extracted.type === 'Received' ? 'You (Self)' : prev.to),
         amount: extracted.amount || prev.amount,
         dateTime: extracted.dateTime || prev.dateTime,
         transactionId: extracted.transactionId || prev.transactionId
@@ -455,39 +460,7 @@ export default function UploadForm({
           </div>
         </div>
 
-        {/* Row 2: Amount & UTR */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div>
-            <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
-              Amount (₹) *
-            </label>
-            <input
-              type="text"
-              name="amount"
-              required
-              value={formData.amount}
-              onChange={handleFormChange}
-              placeholder="e.g. ₹500.00"
-              className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-indigo-500 font-semibold"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
-              UTR / Transaction ID
-            </label>
-            <input
-              type="text"
-              name="transactionId"
-              value={formData.transactionId}
-              onChange={handleFormChange}
-              placeholder="12-digit UTR or Txn ID"
-              className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-indigo-500 font-mono"
-            />
-          </div>
-        </div>
-
-        {/* Row 3: From & To */}
+        {/* Row 2: From & To */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
             <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
@@ -514,6 +487,38 @@ export default function UploadForm({
               onChange={handleFormChange}
               placeholder="Receiver or Merchant Name"
               className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-indigo-500 font-medium"
+            />
+          </div>
+        </div>
+
+        {/* Row 3: Amount & UTR */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
+              Amount (₹) *
+            </label>
+            <input
+              type="text"
+              name="amount"
+              required
+              value={formData.amount}
+              onChange={handleFormChange}
+              placeholder="e.g. ₹500.00"
+              className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-indigo-500 font-semibold"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
+              Transaction ID / UTR
+            </label>
+            <input
+              type="text"
+              name="transactionId"
+              value={formData.transactionId}
+              onChange={handleFormChange}
+              placeholder="12-digit UTR or Txn ID"
+              className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-indigo-500 font-mono"
             />
           </div>
         </div>

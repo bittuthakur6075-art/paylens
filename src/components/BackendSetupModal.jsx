@@ -2,11 +2,79 @@ import React, { useState, useEffect } from 'react';
 import { 
   X, Copy, Check, ExternalLink, Database, 
   Key, Sparkles, AlertCircle, CheckCircle2, RefreshCw, 
-  ShieldCheck, User, Lock, Eye, EyeOff, Shield
+  ShieldCheck, User, Lock, Eye, EyeOff, Shield, Cloud
 } from 'lucide-react';
 import { getWebhookUrl, setWebhookUrl, testWebhookConnection } from '../services/sheetsService';
 import { getGeminiApiKey, setGeminiApiKey } from '../services/ocrService';
 import { updateCredentials, getCurrentUser } from '../services/authService';
+import { 
+  getSupabaseConfig, 
+  setSupabaseConfig, 
+  fetchSupabaseTransactions 
+} from '../services/supabaseService';
+
+export const SUPABASE_SETUP_SQL = `-- 1. Create Transactions Table
+CREATE TABLE IF NOT EXISTS public.transactions (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  app_name TEXT NOT NULL DEFAULT 'Unknown',
+  type TEXT NOT NULL DEFAULT 'Sent',
+  sender TEXT DEFAULT '',
+  receiver TEXT DEFAULT '',
+  amount TEXT NOT NULL DEFAULT '₹0',
+  date_time TEXT DEFAULT '',
+  transaction_id TEXT DEFAULT 'N/A',
+  screenshot_url TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 2. Create Users Table for Multi-Device Login
+CREATE TABLE IF NOT EXISTS public.paylens_users (
+  username TEXT PRIMARY KEY,
+  password_hash TEXT NOT NULL,
+  full_name TEXT NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 3. Insert Default User (pradeep / admin)
+INSERT INTO public.paylens_users (username, password_hash, full_name)
+VALUES (
+  'pradeep',
+  '8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918',
+  'PRADEEP KUMAR SHARMA'
+)
+ON CONFLICT (username) DO NOTHING;
+
+-- 4. Enable Row Level Security (RLS) & Allow Access
+ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow public full access to transactions" 
+  ON public.transactions 
+  FOR ALL 
+  USING (true) 
+  WITH CHECK (true);
+
+ALTER TABLE public.paylens_users ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow public full access to paylens_users" 
+  ON public.paylens_users 
+  FOR ALL 
+  USING (true) 
+  WITH CHECK (true);
+
+-- 5. Enable Real-Time Updates
+ALTER PUBLICATION supabase_realtime ADD TABLE public.transactions;
+
+-- 6. Create Receipts Storage Bucket
+INSERT INTO storage.buckets (id, name, public) 
+VALUES ('receipts', 'receipts', true)
+ON CONFLICT (id) DO UPDATE SET public = true;
+
+CREATE POLICY "Allow public storage upload"
+  ON storage.objects FOR INSERT
+  WITH CHECK (bucket_id = 'receipts');
+
+CREATE POLICY "Allow public storage select"
+  ON storage.objects FOR SELECT
+  USING (bucket_id = 'receipts');
+`;
 
 const GOOGLE_APPS_SCRIPT_CODE = `/**
  * PayLens - Complete Multi-Device Google Apps Script Backend
@@ -17,7 +85,6 @@ const GOOGLE_APPS_SCRIPT_CODE = `/**
 function doGet(e) {
   var action = (e && e.parameter && e.parameter.action) ? e.parameter.action : "getTransactions";
 
-  // Healthcheck / Ping action
   if (action === "ping") {
     return ContentService.createTextOutput(JSON.stringify({
       status: "success",
@@ -27,7 +94,6 @@ function doGet(e) {
 
   var ss = SpreadsheetApp.getActiveSpreadsheet();
 
-  // Get or verify user credentials for cross-device authentication
   if (action === "getAuth") {
     var authSheet = ss.getSheetByName("_PayLens_Auth");
     if (!authSheet) {
@@ -53,7 +119,6 @@ function doGet(e) {
     }
   }
 
-  // Fetch all transactions from sheet
   var sheet = ss.getSheetByName("Extracted Data") || ss.getSheets()[0];
   var lastRow = sheet.getLastRow();
   if (lastRow <= 1) {
@@ -82,7 +147,6 @@ function doGet(e) {
     var rawTxn = row[7] ? String(row[7]) : "";
     var transactionId = rawTxn.replace(/^'/, "");
 
-    // Screenshot extraction from formula or value
     var screenshotCell = row[8] ? String(row[8]) : "";
     var formulaCell = (rowFormula && rowFormula[8]) ? String(rowFormula[8]) : "";
     var screenshotUrl = null;
@@ -108,7 +172,6 @@ function doGet(e) {
     });
   }
 
-  // Reverse so newest records appear on top
   transactions.reverse();
 
   return ContentService.createTextOutput(JSON.stringify({
@@ -134,7 +197,6 @@ function doPost(e) {
       requestData = JSON.parse(e.postData.contents);
     }
 
-    // Ping check
     if (requestData.action === "ping" || requestData.test) {
       return ContentService.createTextOutput(JSON.stringify({
         status: "success",
@@ -142,7 +204,6 @@ function doPost(e) {
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
-    // Sync user auth across devices
     if (requestData.action === "updateAuth") {
       var authSheet = ss.getSheetByName("_PayLens_Auth");
       if (!authSheet) {
@@ -162,7 +223,6 @@ function doPost(e) {
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
-    // Delete transaction
     if (requestData.action === "deleteTransaction") {
       var targetTxnId = requestData.transactionId;
       var targetTimestamp = requestData.timestamp;
@@ -188,7 +248,6 @@ function doPost(e) {
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
-    // Clear all transactions
     if (requestData.action === "clearAll") {
       var lastRow = sheet.getLastRow();
       if (lastRow > 1) {
@@ -200,7 +259,6 @@ function doPost(e) {
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
-    // Automatically create headers if sheet is empty
     if (sheet.getLastRow() === 0) {
       var headers = [
         "Timestamp",
@@ -283,11 +341,18 @@ export default function BackendSetupModal({
   currentUser,
   onUserUpdated 
 }) {
-  const [activeTab, setActiveTab] = useState('sheets'); // 'sheets' | 'settings' | 'security'
+  const [activeTab, setActiveTab] = useState('supabase'); // 'supabase' | 'sheets' | 'settings' | 'security'
   const [webhookUrl, setWebhookState] = useState(getWebhookUrl());
   const [geminiKey, setGeminiState] = useState(getGeminiApiKey());
-  const [isCopied, setIsCopied] = useState(false);
-  const [testStatus, setTestStatus] = useState(null); // { type: 'loading'|'success'|'error', text: '' }
+  
+  // Supabase state
+  const supabaseCfg = getSupabaseConfig();
+  const [supabaseUrl, setSupabaseUrlState] = useState(supabaseCfg.url);
+  const [supabaseKey, setSupabaseKeyState] = useState(supabaseCfg.anonKey);
+  const [isSqlCopied, setIsSqlCopied] = useState(false);
+  const [isScriptCopied, setIsScriptCopied] = useState(false);
+  const [supabaseTestStatus, setSupabaseTestStatus] = useState(null);
+  const [testStatus, setTestStatus] = useState(null);
 
   // Security Form States
   const [profileName, setProfileName] = useState('');
@@ -297,7 +362,7 @@ export default function BackendSetupModal({
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showCurrentPass, setShowCurrentPass] = useState(false);
   const [showNewPass, setShowNewPass] = useState(false);
-  const [securityStatus, setSecurityStatus] = useState(null); // { type: 'success'|'error', text: '' }
+  const [securityStatus, setSecurityStatus] = useState(null);
   const [isUpdatingSecurity, setIsUpdatingSecurity] = useState(false);
 
   useEffect(() => {
@@ -309,21 +374,51 @@ export default function BackendSetupModal({
       setNewPassword('');
       setConfirmPassword('');
       setSecurityStatus(null);
+      setSupabaseTestStatus(null);
     }
   }, [isOpen, currentUser]);
 
   if (!isOpen) return null;
 
-  const handleCopyCode = async () => {
+  const handleCopySql = async () => {
+    await navigator.clipboard.writeText(SUPABASE_SETUP_SQL);
+    setIsSqlCopied(true);
+    setTimeout(() => setIsSqlCopied(false), 2500);
+  };
+
+  const handleCopyScript = async () => {
     await navigator.clipboard.writeText(GOOGLE_APPS_SCRIPT_CODE);
-    setIsCopied(true);
-    setTimeout(() => setIsCopied(false), 2500);
+    setIsScriptCopied(true);
+    setTimeout(() => setIsScriptCopied(false), 2500);
+  };
+
+  const handleTestSupabase = async () => {
+    setSupabaseTestStatus({ type: 'loading', text: 'Checking Supabase database connection...' });
+    setSupabaseConfig(supabaseUrl, supabaseKey);
+    const res = await fetchSupabaseTransactions();
+    if (res.success) {
+      setSupabaseTestStatus({
+        type: 'success',
+        text: `Connected! Transactions table is active and accessible (${res.transactions.length} records verified).`
+      });
+    } else if (res.tableMissing) {
+      setSupabaseTestStatus({
+        type: 'warning',
+        text: 'Connected to Supabase project, but "transactions" table not found yet. Click "Copy Setup SQL" above and run it in Supabase SQL Editor.'
+      });
+    } else {
+      setSupabaseTestStatus({
+        type: 'error',
+        text: res.message || 'Connection failed. Please check URL & Key.'
+      });
+    }
   };
 
   const handleSaveSettings = () => {
     const formatted = setWebhookUrl(webhookUrl);
     setWebhookState(formatted);
     setGeminiApiKey(geminiKey);
+    setSupabaseConfig(supabaseUrl, supabaseKey);
     onWebhookUpdated?.(formatted);
     setTestStatus({
       type: 'success',
@@ -397,7 +492,7 @@ export default function BackendSetupModal({
       if (res.success) {
         setSecurityStatus({
           type: 'success',
-          text: 'Account & Security credentials updated successfully!'
+          text: 'Account & Security credentials updated across devices!'
         });
         setCurrentPassword('');
         setNewPassword('');
@@ -429,11 +524,11 @@ export default function BackendSetupModal({
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/70">
           <div className="flex items-center gap-3">
             <div className="p-2 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-500 dark:text-indigo-400">
-              <Database className="w-5 h-5" />
+              <Cloud className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-base font-bold text-slate-900 dark:text-white">Settings &amp; Configuration</h3>
-              <p className="text-xs text-slate-500 dark:text-slate-400">Google Sheets Webhook, Vision API &amp; Account Security</p>
+              <h3 className="text-base font-bold text-slate-900 dark:text-white">Cloud Backend &amp; Security</h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Supabase PostgreSQL, Google Sheets, &amp; Account Protection</p>
             </div>
           </div>
           
@@ -446,32 +541,43 @@ export default function BackendSetupModal({
         </div>
 
         {/* Tab Navigation */}
-        <div className="flex border-b border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/40 px-6 gap-2">
+        <div className="flex border-b border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/40 px-6 gap-2 overflow-x-auto">
+          <button
+            onClick={() => setActiveTab('supabase')}
+            className={`py-3 px-3 sm:px-4 text-xs font-semibold border-b-2 transition flex items-center gap-2 whitespace-nowrap ${
+              activeTab === 'supabase'
+                ? 'border-emerald-600 text-emerald-600 dark:border-emerald-500 dark:text-emerald-400'
+                : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+            }`}
+          >
+            <Database className="w-4 h-4 text-emerald-500" />
+            <span>Supabase Cloud (Active)</span>
+          </button>
           <button
             onClick={() => setActiveTab('sheets')}
-            className={`py-3 px-3 sm:px-4 text-xs font-semibold border-b-2 transition flex items-center gap-2 ${
+            className={`py-3 px-3 sm:px-4 text-xs font-semibold border-b-2 transition flex items-center gap-2 whitespace-nowrap ${
               activeTab === 'sheets'
                 ? 'border-indigo-600 text-indigo-600 dark:border-indigo-500 dark:text-indigo-400'
                 : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
             }`}
           >
-            <Database className="w-4 h-4" />
+            <Cloud className="w-4 h-4" />
             <span>Google Apps Script</span>
           </button>
           <button
             onClick={() => setActiveTab('settings')}
-            className={`py-3 px-3 sm:px-4 text-xs font-semibold border-b-2 transition flex items-center gap-2 ${
+            className={`py-3 px-3 sm:px-4 text-xs font-semibold border-b-2 transition flex items-center gap-2 whitespace-nowrap ${
               activeTab === 'settings'
                 ? 'border-indigo-600 text-indigo-600 dark:border-indigo-500 dark:text-indigo-400'
                 : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
             }`}
           >
             <Key className="w-4 h-4" />
-            <span>Webhook &amp; AI Keys</span>
+            <span>API Keys</span>
           </button>
           <button
             onClick={() => setActiveTab('security')}
-            className={`py-3 px-3 sm:px-4 text-xs font-semibold border-b-2 transition flex items-center gap-2 ${
+            className={`py-3 px-3 sm:px-4 text-xs font-semibold border-b-2 transition flex items-center gap-2 whitespace-nowrap ${
               activeTab === 'security'
                 ? 'border-indigo-600 text-indigo-600 dark:border-indigo-500 dark:text-indigo-400'
                 : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
@@ -484,50 +590,147 @@ export default function BackendSetupModal({
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6 text-sm">
-          {activeTab === 'sheets' ? (
+          {activeTab === 'supabase' ? (
+            <div className="space-y-4">
+              {/* Connected Banner */}
+              <div className="rounded-2xl p-4 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/40 text-xs text-emerald-950 dark:text-emerald-200 space-y-2.5">
+                <div className="font-bold flex items-center justify-between text-emerald-800 dark:text-emerald-300">
+                  <div className="flex items-center gap-2 text-sm">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                    Supabase Connected: <span className="font-mono text-xs">pewltrcchohaylamincw</span>
+                  </div>
+                  <a
+                    href="https://supabase.com/dashboard/project/pewltrcchohaylamincw/sql/new"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 px-3 py-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs shadow-sm transition"
+                  >
+                    Open SQL Editor <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
+                <p className="text-[11px] text-emerald-900/80 dark:text-emerald-300/80">
+                  To complete the multi-device sync setup, copy the ready SQL script below, open the Supabase SQL Editor, paste it, and click <b>RUN</b>. This creates your tables, real-time live sync, and receipt image storage.
+                </p>
+              </div>
+
+              {/* SQL Code Block */}
+              <div className="relative">
+                <div className="flex items-center justify-between bg-slate-100 dark:bg-slate-950 px-4 py-2.5 rounded-t-2xl border border-b-0 border-slate-300 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-400">
+                  <span className="font-mono font-medium">supabase_setup.sql</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleCopySql}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs transition shadow-sm"
+                    >
+                      {isSqlCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                      {isSqlCopied ? 'Copied SQL' : 'Copy Setup SQL'}
+                    </button>
+                  </div>
+                </div>
+                <pre className="font-mono text-xs bg-slate-900 dark:bg-slate-950 p-4 rounded-b-2xl border border-slate-300 dark:border-slate-800 overflow-x-auto text-emerald-300 max-h-[260px]">
+                  <code>{SUPABASE_SETUP_SQL}</code>
+                </pre>
+              </div>
+
+              {/* Test Supabase Connection */}
+              <div className="flex items-center justify-between pt-2">
+                <button
+                  onClick={handleTestSupabase}
+                  className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-semibold flex items-center gap-2 transition"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  Test Database Connection
+                </button>
+              </div>
+
+              {supabaseTestStatus && (
+                <div className={`p-3.5 rounded-2xl text-xs flex items-center gap-2.5 font-medium ${
+                  supabaseTestStatus.type === 'success'
+                    ? 'bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300'
+                    : supabaseTestStatus.type === 'warning'
+                    ? 'bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-300'
+                    : supabaseTestStatus.type === 'error'
+                    ? 'bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-300'
+                    : 'bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-300 dark:border-indigo-800 text-indigo-800 dark:text-indigo-300'
+                }`}>
+                  {supabaseTestStatus.type === 'success' ? (
+                    <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                  ) : supabaseTestStatus.type === 'warning' ? (
+                    <AlertCircle className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                  ) : (
+                    <RefreshCw className="w-4 h-4 shrink-0 animate-spin text-indigo-600 dark:text-indigo-400" />
+                  )}
+                  <span>{supabaseTestStatus.text}</span>
+                </div>
+              )}
+            </div>
+          ) : activeTab === 'sheets' ? (
             <div className="space-y-4">
               <div className="rounded-2xl p-4 bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800/40 text-xs text-indigo-900 dark:text-indigo-200 space-y-2">
                 <div className="font-bold flex items-center gap-2 text-indigo-700 dark:text-white">
                   <Sparkles className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-                  Multi-Device Cloud Sync Integration:
+                  Google Sheets Multi-Device Script:
                 </div>
                 <p className="text-[11px] text-indigo-950/80 dark:text-indigo-300/90">
-                  By deploying this script, any transactions you add from your computer or mobile will be saved to Google Sheets and instantly visible whenever you log in with your username and password on <b>any phone, laptop, or browser</b>.
+                  If you also want to mirror records into your Google Sheet, paste this script in your sheet:
                 </p>
                 <ol className="list-decimal list-inside space-y-1.5 text-indigo-950/80 dark:text-indigo-300/90 ml-1">
                   <li>Open your Google Sheet: <a href="https://sheets.new" target="_blank" rel="noreferrer" className="underline font-semibold">sheets.new</a></li>
-                  <li>Click <b>Extensions</b> &gt; <b>Apps Script</b> in the top menu bar.</li>
-                  <li>Replace all existing code with the complete snippet below and click <b>Save</b> (Ctrl+S).</li>
-                  <li>Click <b>Deploy</b> &gt; <b>New deployment</b> &gt; Select type: <b>Web app</b> &gt; Set <i>Who has access:</i> <b>Anyone</b> &gt; Click <b>Deploy</b>.</li>
+                  <li>Click <b>Extensions</b> &gt; <b>Apps Script</b> in top menu bar.</li>
+                  <li>Replace default code with snippet below and click <b>Save</b> (Ctrl+S).</li>
+                  <li>Click <b>Deploy</b> &gt; <b>New deployment</b> &gt; Type: <b>Web app</b> &gt; Who has access: <b>Anyone</b> &gt; Click <b>Deploy</b>.</li>
                 </ol>
-                <div className="text-[11px] text-emerald-700 dark:text-emerald-400 pt-1 font-semibold flex items-center gap-1.5">
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  Supports cross-device data viewing, receipts storage in Drive, and persistent login.
-                </div>
               </div>
 
               <div className="relative">
                 <div className="flex items-center justify-between bg-slate-100 dark:bg-slate-950 px-4 py-2.5 rounded-t-2xl border border-b-0 border-slate-300 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-400">
                   <span className="font-mono font-medium">GoogleAppsScript.gs</span>
                   <button
-                    onClick={handleCopyCode}
+                    onClick={handleCopyScript}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs transition shadow-sm"
                   >
-                    {isCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                    {isCopied ? 'Copied to Clipboard' : 'Copy Script'}
+                    {isScriptCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                    {isScriptCopied ? 'Copied to Clipboard' : 'Copy Script'}
                   </button>
                 </div>
-                <pre className="font-mono text-xs bg-slate-900 dark:bg-slate-950 p-4 rounded-b-2xl border border-slate-300 dark:border-slate-800 overflow-x-auto text-slate-200 max-h-[280px]">
+                <pre className="font-mono text-xs bg-slate-900 dark:bg-slate-950 p-4 rounded-b-2xl border border-slate-300 dark:border-slate-800 overflow-x-auto text-slate-200 max-h-[260px]">
                   <code>{GOOGLE_APPS_SCRIPT_CODE}</code>
                 </pre>
               </div>
             </div>
           ) : activeTab === 'settings' ? (
             <div className="space-y-6">
-              {/* Webhook URL Input */}
+              {/* Supabase URL and Key */}
               <div className="space-y-2">
                 <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 uppercase tracking-wider">
-                  Google Apps Script Web App URL (`WEBHOOK_URL`)
+                  Supabase Project URL
+                </label>
+                <input
+                  type="url"
+                  value={supabaseUrl}
+                  onChange={(e) => setSupabaseUrlState(e.target.value)}
+                  placeholder="https://pewltrcchohaylamincw.supabase.co"
+                  className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl px-4 py-2.5 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-medium"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 uppercase tracking-wider">
+                  Supabase Anon / Public Key
+                </label>
+                <input
+                  type="password"
+                  value={supabaseKey}
+                  onChange={(e) => setSupabaseKeyState(e.target.value)}
+                  placeholder="sb_publishable_..."
+                  className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl px-4 py-2.5 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-medium"
+                />
+              </div>
+
+              {/* Webhook URL Input */}
+              <div className="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 uppercase tracking-wider">
+                  Google Apps Script Web App URL (Optional Fallback)
                 </label>
                 <div className="flex flex-col sm:flex-row gap-2">
                   <input
@@ -545,9 +748,6 @@ export default function BackendSetupModal({
                     Test Connection
                   </button>
                 </div>
-                <p className="text-[11px] text-slate-500">
-                  Paste the Web App URL generated after clicking Deploy &gt; Web App in Google Apps Script.
-                </p>
               </div>
 
               {/* Gemini API Key Input */}
@@ -572,9 +772,6 @@ export default function BackendSetupModal({
                   placeholder="AIzaSy..."
                   className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl px-4 py-2.5 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-medium"
                 />
-                <p className="text-[11px] text-slate-500">
-                  By default, local in-browser OCR (Tesseract.js) runs 100% free with zero configuration. Providing a Gemini API key upgrades extraction to multi-modal vision AI.
-                </p>
               </div>
 
               {/* Status Message */}
@@ -598,7 +795,7 @@ export default function BackendSetupModal({
               )}
             </div>
           ) : (
-            /* Tab 3: Security & Credentials */
+            /* Tab 4: Security & Credentials */
             <form onSubmit={handleSecurityUpdate} className="space-y-4">
               <div className="p-4 rounded-2xl bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800/40 flex items-start gap-3">
                 <div className="p-2 rounded-xl bg-indigo-600/10 text-indigo-600 dark:text-indigo-400 shrink-0">
@@ -609,7 +806,7 @@ export default function BackendSetupModal({
                     Personal Vault Protection
                   </h4>
                   <p className="text-[11px] text-slate-600 dark:text-slate-400 mt-0.5">
-                    Update your full name, login username, or change password. All credentials are encrypted using SHA-256 Web Crypto.
+                    Update your full name, login username, or change password. All credentials are encrypted using SHA-256 Web Crypto and synced to Supabase.
                   </p>
                 </div>
               </div>
@@ -758,7 +955,9 @@ export default function BackendSetupModal({
         {/* Footer */}
         <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/70 flex items-center justify-between">
           <span className="text-xs text-slate-500">
-            {activeTab === 'sheets' 
+            {activeTab === 'supabase'
+              ? 'Multi-Device Cloud Database Active'
+              : activeTab === 'sheets' 
               ? 'Copy script and deploy as Web App' 
               : activeTab === 'settings'
               ? 'Values stored securely in browser'

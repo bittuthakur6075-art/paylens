@@ -138,16 +138,17 @@ export default function TransactionTable({
   const handleExportCsv = () => {
     if (filteredTransactions.length === 0) return;
 
-    const headers = ['Timestamp', 'Payment App', 'Type', 'From', 'To', 'Amount', 'Date & Time', 'Transaction ID / UTR'];
+    const headers = ['Payment App', 'Type (Sent/Received)', 'From (Sender)', 'To (Receiver)', 'Amount', 'Date & Time', 'Transaction ID / UTR', 'Screenshot Info', 'Timestamp'];
     const rows = filteredTransactions.map(t => [
-      `"${t.timestamp || new Date().toISOString()}"`,
       `"${t.appName || ''}"`,
       `"${t.type || ''}"`,
       `"${t.from || ''}"`,
       `"${t.to || ''}"`,
       `"${t.amount || ''}"`,
       `"${t.dateTime || ''}"`,
-      `"${t.transactionId || ''}"`
+      `"${t.transactionId || ''}"`,
+      `"${t.screenshotUrl ? 'Yes' : 'No'}"`,
+      `"${t.timestamp || new Date().toISOString()}"`
     ]);
 
     const csvContent = '\uFEFF' + [headers.join(','), ...rows.map(r => r.join(','))].join('\r\n');
@@ -285,14 +286,14 @@ export default function TransactionTable({
           <table className="w-full text-left text-xs text-slate-700 dark:text-slate-300">
             <thead className="bg-slate-50 dark:bg-slate-950/70 border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 uppercase tracking-wider font-bold text-[11px]">
               <tr>
-                <th className="py-3.5 px-4">App</th>
-                <th className="py-3.5 px-4">Type</th>
+                <th className="py-3.5 px-4">Payment App</th>
+                <th className="py-3.5 px-4">Type (Sent/Received)</th>
+                <th className="py-3.5 px-4">From (Sender)</th>
+                <th className="py-3.5 px-4">To (Receiver)</th>
                 <th className="py-3.5 px-4">Amount</th>
-                <th className="py-3.5 px-4">From</th>
-                <th className="py-3.5 px-4">To</th>
                 <th className="py-3.5 px-4">Date &amp; Time</th>
                 <th className="py-3.5 px-4">Transaction ID / UTR</th>
-                <th className="py-3.5 px-4 text-center">Receipt</th>
+                <th className="py-3.5 px-4 text-center">Screenshot Info</th>
                 <th className="py-3.5 px-3 text-center">Action</th>
               </tr>
             </thead>
@@ -306,12 +307,12 @@ export default function TransactionTable({
                     key={tx.id} 
                     className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition group"
                   >
-                    {/* App */}
+                    {/* Payment App */}
                     <td className="py-3 px-4 whitespace-nowrap">
                       <AppBadge appName={tx.appName} />
                     </td>
 
-                    {/* Type Badge */}
+                    {/* Type (Sent/Received) */}
                     <td className="py-3 px-4 whitespace-nowrap">
                       <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold ${
                         isSent
@@ -323,6 +324,20 @@ export default function TransactionTable({
                       </span>
                     </td>
 
+                    {/* From (Sender) */}
+                    <td className="py-3 px-4 max-w-[140px] truncate" title={tx.from}>
+                      <span className="font-semibold text-slate-700 dark:text-slate-300">
+                        {tx.from || '—'}
+                      </span>
+                    </td>
+
+                    {/* To (Receiver) */}
+                    <td className="py-3 px-4 max-w-[150px] truncate" title={tx.to}>
+                      <span className="font-semibold text-slate-800 dark:text-slate-200">
+                        {tx.to || '—'}
+                      </span>
+                    </td>
+
                     {/* Amount */}
                     <td className="py-3 px-4 whitespace-nowrap">
                       <span className="font-extrabold text-slate-900 dark:text-white text-sm tracking-tight">
@@ -330,26 +345,12 @@ export default function TransactionTable({
                       </span>
                     </td>
 
-                    {/* From */}
-                    <td className="py-3 px-4 max-w-[140px] truncate" title={tx.from}>
-                      <span className="font-semibold text-slate-700 dark:text-slate-300">
-                        {tx.from || '—'}
-                      </span>
-                    </td>
-
-                    {/* To */}
-                    <td className="py-3 px-4 max-w-[150px] truncate" title={tx.to}>
-                      <span className="font-semibold text-slate-800 dark:text-slate-200">
-                        {tx.to || '—'}
-                      </span>
-                    </td>
-
-                    {/* Date */}
+                    {/* Date & Time */}
                     <td className="py-3 px-4 whitespace-nowrap text-slate-500 dark:text-slate-400 font-mono text-[11px]">
                       {tx.dateTime}
                     </td>
 
-                    {/* UTR / Transaction ID */}
+                    {/* Transaction ID / UTR */}
                     <td className="py-3 px-4 whitespace-nowrap">
                       <div className="flex items-center gap-1.5 font-mono text-xs">
                         <span className="text-indigo-600 dark:text-sky-400 font-bold select-all">

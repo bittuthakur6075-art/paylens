@@ -1,10 +1,11 @@
 /**
  * Authentication and Security Service
  * Secures PayLens for personal access by Pradeep Kumar Sharma
- * Supports cloud credentials synchronization across multiple devices.
+ * Supports cloud credentials synchronization across multiple devices via Supabase & Google Sheets.
  */
 
 import { fetchCloudAuth, updateCloudAuth } from './sheetsService';
+import { fetchSupabaseAuth, updateSupabaseAuth } from './supabaseService';
 
 const STORAGE_KEY_AUTH = 'paylens_auth_credentials';
 const STORAGE_KEY_SESSION = 'paylens_active_session';
@@ -79,7 +80,7 @@ export const login = async (username, password) => {
     }));
 
     // Trigger non-blocking cloud check to keep in sync
-    fetchCloudAuth().then(res => {
+    fetchSupabaseAuth().then(res => {
       if (res.success && res.user) {
         localStorage.setItem(STORAGE_KEY_AUTH, JSON.stringify(res.user));
       }
@@ -94,7 +95,36 @@ export const login = async (username, password) => {
     };
   }
 
-  // 2. Check cloud credentials if local failed (allows logging in from another device with updated password)
+  // 2. Check Supabase cloud credentials
+  try {
+    const supaRes = await fetchSupabaseAuth();
+    if (supaRes.success && supaRes.user) {
+      const supaUser = supaRes.user;
+      if (
+        supaUser.username &&
+        supaUser.username.toLowerCase() === inputUser &&
+        inputHash === supaUser.passwordHash
+      ) {
+        localStorage.setItem(STORAGE_KEY_AUTH, JSON.stringify(supaUser));
+        localStorage.setItem(STORAGE_KEY_SESSION, JSON.stringify({
+          loggedIn: true,
+          timestamp: Date.now(),
+          username: supaUser.username
+        }));
+        return {
+          success: true,
+          user: {
+            username: supaUser.username,
+            fullName: supaUser.fullName || 'PRADEEP KUMAR SHARMA'
+          }
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('Supabase auth check failed:', err);
+  }
+
+  // 3. Check Google Sheets cloud credentials fallback
   try {
     const cloudRes = await fetchCloudAuth();
     if (cloudRes.success && cloudRes.user) {
@@ -104,7 +134,6 @@ export const login = async (username, password) => {
         cloudUser.username.toLowerCase() === inputUser &&
         inputHash === cloudUser.passwordHash
       ) {
-        // Sync cloud credentials into this device's localStorage
         localStorage.setItem(STORAGE_KEY_AUTH, JSON.stringify(cloudUser));
         localStorage.setItem(STORAGE_KEY_SESSION, JSON.stringify({
           loggedIn: true,
@@ -121,10 +150,10 @@ export const login = async (username, password) => {
       }
     }
   } catch (err) {
-    console.warn('Cloud auth check failed:', err);
+    console.warn('Google Sheets cloud auth check failed:', err);
   }
 
-  // 3. Fallback: check against DEFAULT_USER
+  // 4. Fallback: check against DEFAULT_USER
   if (DEFAULT_USER.username.toLowerCase() === inputUser && inputHash === DEFAULT_USER.passwordHash) {
     localStorage.setItem(STORAGE_KEY_AUTH, JSON.stringify(DEFAULT_USER));
     localStorage.setItem(STORAGE_KEY_SESSION, JSON.stringify({
@@ -156,7 +185,7 @@ export const logout = () => {
 };
 
 /**
- * Update security credentials across local storage and Google Sheets
+ * Update security credentials across local storage, Supabase, and Google Sheets
  */
 export const updateCredentials = async ({ currentPassword, newUsername, newPassword, newFullName }) => {
   const creds = getStoredCredentials();
@@ -189,7 +218,14 @@ export const updateCredentials = async ({ currentPassword, newUsername, newPassw
     username: updated.username
   }));
 
-  // Sync to Google Sheets so the same credentials work on all devices
+  // Sync to Supabase so credentials work across all systems
+  try {
+    await updateSupabaseAuth(updated);
+  } catch (err) {
+    console.warn('Could not sync updated credentials to Supabase:', err);
+  }
+
+  // Sync to Google Sheets fallback
   try {
     await updateCloudAuth(updated);
   } catch (err) {
