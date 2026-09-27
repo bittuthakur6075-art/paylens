@@ -754,7 +754,7 @@ export default function BackendSetupModal({
               <div className="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-800">
                 <div className="flex items-center justify-between">
                   <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 uppercase tracking-wider">
-                    Google Gemini 2.5 Flash API Key (Optional)
+                    Google Gemini AI Studio API Key
                   </label>
                   <a
                     href="https://aistudio.google.com/app/apikey"
@@ -769,7 +769,7 @@ export default function BackendSetupModal({
                   type="password"
                   value={geminiKey}
                   onChange={(e) => setGeminiState(e.target.value)}
-                  placeholder="AIzaSy..."
+                  placeholder="AIzaSy... or AQ..."
                   className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl px-4 py-2.5 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-medium"
                 />
               </div>
