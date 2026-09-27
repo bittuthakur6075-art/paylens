@@ -16,14 +16,73 @@ export const setGeminiApiKey = (key) => {
 };
 
 /**
+ * Safely normalizes any image input (Blob, File, Data URL, Object URL, Event-wrapped object)
+ * into a valid image URL string.
+ */
+export const normalizeImageSource = async (input) => {
+  if (!input) return null;
+
+  // If someone passed a DOM or React SyntheticEvent object (e.g. from onClick={handleAutoExtract})
+  if (typeof input === 'object' && (input.nativeEvent || input.preventDefault || (input.target && input.target.value !== undefined && !input.target?.result))) {
+    return null;
+  }
+
+  // Already a string
+  if (typeof input === 'string') {
+    const trimmed = input.trim();
+    if (!trimmed) return null;
+    if (trimmed.startsWith('data:') || trimmed.startsWith('blob:') || trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+      return trimmed;
+    }
+    // Plain base64 string without data prefix
+    if (/^[A-Za-z0-9+/=]+$/.test(trimmed.slice(0, 100))) {
+      return `data:image/png;base64,${trimmed}`;
+    }
+    return trimmed;
+  }
+
+  // File or Blob instance
+  if (typeof Blob !== 'undefined' && input instanceof Blob) {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => {
+        try {
+          resolve(URL.createObjectURL(input));
+        } catch {
+          resolve(null);
+        }
+      };
+      reader.readAsDataURL(input);
+    });
+  }
+
+  // Object containing url or src
+  if (typeof input === 'object') {
+    if (typeof input.src === 'string') return input.src;
+    if (typeof input.url === 'string') return input.url;
+    if (typeof input.dataUrl === 'string') return input.dataUrl;
+    if (typeof input.screenshotUrl === 'string') return input.screenshotUrl;
+    if (input.target && typeof input.target.result === 'string') return input.target.result;
+  }
+
+  return null;
+};
+
+/**
  * Preprocess image on HTML5 canvas with contrast enhancement, sharpening,
  * and high-fidelity PNG output for maximum Tesseract OCR accuracy.
  */
 export const preprocessImageForOCR = async (imageSource) => {
+  const normalized = await normalizeImageSource(imageSource);
+  if (!normalized || typeof normalized !== 'string') {
+    return imageSource;
+  }
+
   return new Promise((resolve) => {
-    const timeout = setTimeout(() => resolve(imageSource), 3000);
+    const timeout = setTimeout(() => resolve(normalized), 4000);
     const img = new Image();
-    if (imageSource && !imageSource.startsWith('data:')) {
+    if (typeof normalized === 'string' && !normalized.startsWith('data:')) {
       img.crossOrigin = 'anonymous';
     }
     img.onload = () => {
@@ -67,14 +126,14 @@ export const preprocessImageForOCR = async (imageSource) => {
         // PNG preserves crisp character boundaries without JPEG compression noise
         resolve(canvas.toDataURL('image/png'));
       } catch (err) {
-        resolve(imageSource);
+        resolve(normalized);
       }
     };
     img.onerror = () => {
       clearTimeout(timeout);
-      resolve(imageSource);
+      resolve(normalized);
     };
-    img.src = imageSource;
+    img.src = normalized;
   });
 };
 
@@ -82,12 +141,13 @@ export const preprocessImageForOCR = async (imageSource) => {
  * Compress image into a compact thumbnail for Google Sheets cell storage (< 15 KB)
  */
 export const compressImageForSheets = async (imageSource, maxWidth = 350, quality = 0.6) => {
+  const normalized = await normalizeImageSource(imageSource);
+  if (!normalized || typeof normalized !== 'string' || !normalized.startsWith('data:image')) {
+    return normalized || imageSource || '';
+  }
+
   return new Promise((resolve) => {
-    if (!imageSource || !imageSource.startsWith('data:image')) {
-      resolve(imageSource || '');
-      return;
-    }
-    const timeout = setTimeout(() => resolve(imageSource), 2000);
+    const timeout = setTimeout(() => resolve(normalized), 2500);
     const img = new Image();
     img.onload = () => {
       clearTimeout(timeout);
@@ -105,14 +165,14 @@ export const compressImageForSheets = async (imageSource, maxWidth = 350, qualit
         ctx.drawImage(img, 0, 0, width, height);
         resolve(canvas.toDataURL('image/jpeg', quality));
       } catch (err) {
-        resolve(imageSource);
+        resolve(normalized);
       }
     };
     img.onerror = () => {
       clearTimeout(timeout);
-      resolve(imageSource);
+      resolve(normalized);
     };
-    img.src = imageSource;
+    img.src = normalized;
   });
 };
 
@@ -512,8 +572,15 @@ export const parsePaymentText = (text) => {
 async function extractWithGemini(base64Image, apiKey, onProgress) {
   onProgress?.({ stage: 'gemini', progress: 45, message: 'Analyzing receipt with Google Gemini Vision AI...' });
 
-  const cleanBase64 = base64Image.replace(/^data:image\/[a-z]+;base64,/, '');
-  const mimeType = base64Image.match(/data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+).*,.*/)?.[1] || 'image/jpeg';
+  let cleanBase64 = base64Image;
+  let mimeType = 'image/jpeg';
+  if (typeof base64Image === 'string' && base64Image.startsWith('data:')) {
+    const match = base64Image.match(/^data:([^;]+);base64,(.+)$/);
+    if (match) {
+      mimeType = match[1];
+      cleanBase64 = match[2];
+    }
+  }
 
   const prompt = `You are a specialist Indian UPI payment OCR parser.
 Examine this payment receipt screenshot (PhonePe, Google Pay, Paytm, BHIM, CRED, Amazon Pay, Bank app, etc.) and extract the transaction details with exact precision into this JSON structure:
@@ -592,11 +659,18 @@ async function extractWithTesseract(imageSource, onProgress) {
   // Pre-process canvas to enhance contrast and remove background noise
   const enhancedImage = await preprocessImageForOCR(imageSource);
 
-  onProgress?.({ stage: 'engine', progress: 40, message: 'Initializing OCR engine...' });
-  const worker = await createWorker('eng');
+  onProgress?.({ stage: 'engine', progress: 35, message: 'Initializing OCR engine...' });
+  const worker = await createWorker('eng', 1, {
+    logger: m => {
+      if (m?.status === 'recognizing text' && typeof m.progress === 'number') {
+        const p = Math.round(35 + m.progress * 55);
+        onProgress?.({ stage: 'recognizing', progress: p, message: `Scanning receipt text (${Math.round(m.progress * 100)}%)...` });
+      }
+    }
+  });
 
   try {
-    onProgress?.({ stage: 'recognizing', progress: 70, message: 'Scanning payment app, recipient, amount & UTR...' });
+    onProgress?.({ stage: 'recognizing', progress: 50, message: 'Scanning payment app, recipient, amount & UTR...' });
 
     const ret = await worker.recognize(enhancedImage);
     const rawText = ret.data.text;
@@ -614,18 +688,23 @@ async function extractWithTesseract(imageSource, onProgress) {
  * Main OCR Extraction coordinator
  */
 export const extractReceiptData = async (imageSource, onProgress) => {
+  const normalizedSource = await normalizeImageSource(imageSource);
+  if (!normalizedSource || typeof normalizedSource !== 'string') {
+    throw new Error('Please upload or choose a valid payment screenshot.');
+  }
+
   const geminiKey = getGeminiApiKey();
 
   if (geminiKey) {
     try {
-      return await extractWithGemini(imageSource, geminiKey, onProgress);
+      return await extractWithGemini(normalizedSource, geminiKey, onProgress);
     } catch (geminiError) {
       console.warn('Gemini Vision failed, falling back to local OCR:', geminiError);
       onProgress?.({ stage: 'fallback', progress: 30, message: 'Switching to high-accuracy local OCR engine...' });
-      return await extractWithTesseract(imageSource, onProgress);
+      return await extractWithTesseract(normalizedSource, onProgress);
     }
   }
 
-  return await extractWithTesseract(imageSource, onProgress);
+  return await extractWithTesseract(normalizedSource, onProgress);
 };
 

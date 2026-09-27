@@ -115,7 +115,8 @@ export default function UploadForm({
   };
 
   const handleAutoExtract = async (targetSource = null) => {
-    const imgSource = targetSource || imagePreview;
+    const validTarget = (typeof targetSource === 'string' && targetSource.length > 0) ? targetSource : null;
+    const imgSource = validTarget || imagePreview;
     if (!imgSource) {
       setExtractError('Please upload or choose a payment screenshot first.');
       return;
@@ -146,6 +147,15 @@ export default function UploadForm({
       }));
 
       setIsAutoFilled(true);
+      try {
+        confetti({
+          particleCount: 25,
+          spread: 50,
+          origin: { y: 0.8 }
+        });
+      } catch {
+        // Non-critical visual effect
+      }
     } catch (err) {
       console.error('Extraction error:', err);
       setExtractError(`Extraction notice: ${err.message || 'Could not parse text'}. You can fill/edit the fields below manually.`);
@@ -346,7 +356,7 @@ export default function UploadForm({
                 <div className="mt-2.5 flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={handleAutoExtract}
+                    onClick={() => handleAutoExtract()}
                     disabled={isExtracting}
                     className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold text-xs flex items-center gap-1.5 shadow-md shadow-indigo-600/20 transition"
                   >
