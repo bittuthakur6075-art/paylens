@@ -300,16 +300,16 @@ export const subscribeToTransactions = (onInsert, onDelete) => {
 /**
  * Cross-device User Authentication via Supabase
  */
-export const fetchSupabaseAuth = async () => {
+export const fetchSupabaseAuth = async (username = null) => {
   const supabase = getSupabaseClient();
   if (!supabase) return { success: false };
 
   try {
-    const { data, error } = await supabase
-      .from('paylens_users')
-      .select('*')
-      .limit(1)
-      .single();
+    let query = supabase.from('paylens_users').select('*');
+    if (username) {
+      query = query.ilike('username', username.trim());
+    }
+    const { data, error } = await query.limit(1).maybeSingle();
 
     if (error || !data) return { success: false };
 
@@ -326,24 +326,37 @@ export const fetchSupabaseAuth = async () => {
   }
 };
 
-export const updateSupabaseAuth = async (user) => {
+export const updateSupabaseAuth = async (user, oldUsername = null) => {
   const supabase = getSupabaseClient();
   if (!supabase) return { success: false };
 
   try {
+    // If username changed, delete the old username entry
+    if (oldUsername && oldUsername.trim().toLowerCase() !== user.username.trim().toLowerCase()) {
+      await supabase
+        .from('paylens_users')
+        .delete()
+        .ilike('username', oldUsername.trim());
+    }
+
     const { error } = await supabase
       .from('paylens_users')
       .upsert([
         {
-          username: user.username,
+          username: user.username.trim(),
           password_hash: user.passwordHash,
           full_name: user.fullName,
           updated_at: new Date().toISOString()
         }
-      ]);
+      ], { onConflict: 'username' });
 
-    return { success: !error };
+    if (error) {
+      console.warn('Supabase auth update error:', error.message);
+      return { success: false, error: error.message };
+    }
+
+    return { success: true };
   } catch (e) {
-    return { success: false };
+    return { success: false, error: e.message };
   }
 };

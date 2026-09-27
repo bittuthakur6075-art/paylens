@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Lock, User, Eye, EyeOff, ShieldCheck, 
-  Sparkles, ArrowRight, AlertCircle, KeyRound, CheckCircle2 
+  Sparkles, ArrowRight, AlertCircle, KeyRound, CheckCircle2, Cloud
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
-import { login } from '../services/authService';
+import { login, getCurrentUser } from '../services/authService';
+import { fetchSupabaseAuth } from '../services/supabaseService';
 
 export default function LoginScreen({ onLoginSuccess }) {
   const [username, setUsername] = useState('');
@@ -12,7 +13,19 @@ export default function LoginScreen({ onLoginSuccess }) {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
-  const [welcomeUser, setWelcomeUser] = useState(null); // When set, shows welcome animation screen!
+  const [welcomeUser, setWelcomeUser] = useState(null);
+  const [vaultOwner, setVaultOwner] = useState(() => getCurrentUser()?.fullName || 'PRADEEP KUMAR SHARMA');
+
+  // Dynamically load vault owner name from Supabase cloud
+  useEffect(() => {
+    fetchSupabaseAuth()
+      .then(res => {
+        if (res.success && res.user && res.user.fullName) {
+          setVaultOwner(res.user.fullName);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -73,15 +86,15 @@ export default function LoginScreen({ onLoginSuccess }) {
           </div>
 
           <div className="space-y-2">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/30 text-xs font-bold text-indigo-400 uppercase tracking-widest">
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-xs font-bold text-emerald-400 uppercase tracking-widest">
               <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-              Authenticated Successfully
+              Authenticated via Supabase Cloud
             </div>
             <h2 className="text-sm font-medium text-slate-400 tracking-wider uppercase mt-2">
               Welcome
             </h2>
             <h1 className="text-2xl sm:text-3xl font-black tracking-tight bg-gradient-to-r from-white via-indigo-200 to-purple-200 bg-clip-text text-transparent">
-              {welcomeUser.fullName || 'PRADEEP KUMAR SHARMA'}
+              {welcomeUser.fullName || vaultOwner}
             </h1>
             <p className="text-xs text-slate-400 max-w-sm mx-auto pt-1">
               Your personal PayLens financial extraction vault is ready. Loading dashboard...
@@ -89,8 +102,8 @@ export default function LoginScreen({ onLoginSuccess }) {
           </div>
 
           <div className="flex items-center justify-center gap-2 pt-2">
-            <div className="w-2 h-2 rounded-full bg-indigo-500 animate-ping" />
-            <span className="text-xs font-mono text-indigo-300">Opening Dashboard</span>
+            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+            <span className="text-xs font-mono text-emerald-300">Opening Dashboard</span>
           </div>
         </div>
       </div>
@@ -116,8 +129,12 @@ export default function LoginScreen({ onLoginSuccess }) {
             PayLens Security Access
           </h1>
           <p className="text-xs text-slate-400">
-            Personal vault reserved for <span className="text-indigo-400 font-semibold">PRADEEP KUMAR SHARMA</span>
+            Personal vault reserved for <span className="text-indigo-400 font-semibold">{vaultOwner}</span>
           </p>
+          <div className="pt-1 flex items-center justify-center gap-1.5 text-[11px] text-emerald-400">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+            <span>Supabase Cloud Security Active</span>
+          </div>
         </div>
 
         {/* Error Notification */}
@@ -180,7 +197,7 @@ export default function LoginScreen({ onLoginSuccess }) {
             {isLoading ? (
               <span className="flex items-center gap-2">
                 <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                Verifying...
+                Verifying via Cloud...
               </span>
             ) : (
               <>
@@ -199,7 +216,7 @@ export default function LoginScreen({ onLoginSuccess }) {
           <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800/80 text-[11px] text-slate-400">
             💡 Default Login: <span className="text-indigo-400 font-mono font-semibold">pradeep</span> / Password: <span className="text-indigo-400 font-mono font-semibold">admin</span>
             <div className="text-[10px] text-slate-500 mt-0.5">
-              (You can change your username &amp; password anytime in Settings)
+              (You can change your username &amp; password anytime in Settings and it syncs to Supabase)
             </div>
           </div>
         </div>

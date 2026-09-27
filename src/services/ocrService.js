@@ -1,7 +1,7 @@
 import { createWorker } from 'tesseract.js';
 
 const STORAGE_KEY_GEMINI = 'paylens_gemini_api_key';
-const DEFAULT_GEMINI_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
+const DEFAULT_GEMINI_KEY = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_GEMINI_API_KEY) || '';
 
 export const getGeminiApiKey = () => {
   return localStorage.getItem(STORAGE_KEY_GEMINI) || DEFAULT_GEMINI_KEY;

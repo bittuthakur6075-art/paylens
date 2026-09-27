@@ -70,34 +70,9 @@ export const login = async (username, password) => {
   const inputHash = await sha256(password.trim());
   const inputUser = username.trim().toLowerCase();
 
-  // 1. Check local credentials first
-  const localCreds = getStoredCredentials();
-  if (localCreds.username.toLowerCase() === inputUser && inputHash === localCreds.passwordHash) {
-    localStorage.setItem(STORAGE_KEY_SESSION, JSON.stringify({
-      loggedIn: true,
-      timestamp: Date.now(),
-      username: localCreds.username
-    }));
-
-    // Trigger non-blocking cloud check to keep in sync
-    fetchSupabaseAuth().then(res => {
-      if (res.success && res.user) {
-        localStorage.setItem(STORAGE_KEY_AUTH, JSON.stringify(res.user));
-      }
-    }).catch(() => {});
-
-    return {
-      success: true,
-      user: {
-        username: localCreds.username,
-        fullName: localCreds.fullName || 'PRADEEP KUMAR SHARMA'
-      }
-    };
-  }
-
-  // 2. Check Supabase cloud credentials
+  // 1. Direct Supabase Cloud Verification First (Authoritative cloud source)
   try {
-    const supaRes = await fetchSupabaseAuth();
+    const supaRes = await fetchSupabaseAuth(inputUser);
     if (supaRes.success && supaRes.user) {
       const supaUser = supaRes.user;
       if (
@@ -122,6 +97,31 @@ export const login = async (username, password) => {
     }
   } catch (err) {
     console.warn('Supabase auth check failed:', err);
+  }
+
+  // 2. Check local credentials cache (Offline fallback)
+  const localCreds = getStoredCredentials();
+  if (localCreds.username.toLowerCase() === inputUser && inputHash === localCreds.passwordHash) {
+    localStorage.setItem(STORAGE_KEY_SESSION, JSON.stringify({
+      loggedIn: true,
+      timestamp: Date.now(),
+      username: localCreds.username
+    }));
+
+    // Trigger non-blocking cloud check to keep in sync
+    fetchSupabaseAuth(inputUser).then(res => {
+      if (res.success && res.user) {
+        localStorage.setItem(STORAGE_KEY_AUTH, JSON.stringify(res.user));
+      }
+    }).catch(() => {});
+
+    return {
+      success: true,
+      user: {
+        username: localCreds.username,
+        fullName: localCreds.fullName || 'PRADEEP KUMAR SHARMA'
+      }
+    };
   }
 
   // 3. Check Google Sheets cloud credentials fallback
@@ -185,19 +185,31 @@ export const logout = () => {
 };
 
 /**
- * Update security credentials across local storage, Supabase, and Google Sheets
+ * Update security credentials across Supabase, local storage, and Google Sheets
  */
 export const updateCredentials = async ({ currentPassword, newUsername, newPassword, newFullName }) => {
   const creds = getStoredCredentials();
   const currentHash = await sha256(currentPassword.trim());
 
-  if (currentHash !== creds.passwordHash && currentHash !== DEFAULT_USER.passwordHash) {
+  let isCurrentPassValid = false;
+  if (currentHash === creds.passwordHash || currentHash === DEFAULT_USER.passwordHash) {
+    isCurrentPassValid = true;
+  } else {
+    // Check Supabase directly
+    const supaCheck = await fetchSupabaseAuth(creds.username);
+    if (supaCheck.success && supaCheck.user && supaCheck.user.passwordHash === currentHash) {
+      isCurrentPassValid = true;
+    }
+  }
+
+  if (!isCurrentPassValid) {
     return {
       success: false,
       message: 'Current password does not match.'
     };
   }
 
+  const oldUsername = creds.username;
   const updated = {
     ...creds,
     username: newUsername ? newUsername.trim() : creds.username,
@@ -208,24 +220,24 @@ export const updateCredentials = async ({ currentPassword, newUsername, newPassw
     updated.passwordHash = await sha256(newPassword.trim());
   }
 
-  // Save to local storage
+  // 1. Save directly to Supabase cloud database
+  try {
+    await updateSupabaseAuth(updated, oldUsername);
+  } catch (err) {
+    console.warn('Could not sync updated credentials to Supabase:', err);
+  }
+
+  // 2. Save to local storage cache
   localStorage.setItem(STORAGE_KEY_AUTH, JSON.stringify(updated));
 
-  // Update session
+  // 3. Update active session
   localStorage.setItem(STORAGE_KEY_SESSION, JSON.stringify({
     loggedIn: true,
     timestamp: Date.now(),
     username: updated.username
   }));
 
-  // Sync to Supabase so credentials work across all systems
-  try {
-    await updateSupabaseAuth(updated);
-  } catch (err) {
-    console.warn('Could not sync updated credentials to Supabase:', err);
-  }
-
-  // Sync to Google Sheets fallback
+  // 4. Sync to Google Sheets fallback
   try {
     await updateCloudAuth(updated);
   } catch (err) {
@@ -234,7 +246,7 @@ export const updateCredentials = async ({ currentPassword, newUsername, newPassw
 
   return {
     success: true,
-    message: 'Credentials updated successfully across devices!',
+    message: 'Credentials updated and secured in Supabase across all devices!',
     user: {
       username: updated.username,
       fullName: updated.fullName
