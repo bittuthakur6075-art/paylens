@@ -113,8 +113,8 @@ export const preprocessImageForOCR = async (imageSource) => {
         for (let i = 0; i < d.length; i += 4) {
           // Standard ITU-R luminance weights
           const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-          // Boost contrast for sharp character edges
-          const contrast = 1.35;
+          // Boost contrast moderately for sharp character edges without blowing out soft fonts
+          const contrast = 1.15;
           const adjusted = ((gray / 255 - 0.5) * contrast + 0.5) * 255;
           const finalVal = Math.min(255, Math.max(0, adjusted));
           d[i] = finalVal;
@@ -182,7 +182,7 @@ export const compressImageForSheets = async (imageSource, maxWidth = 350, qualit
 const sanitizeName = (raw) => {
   if (!raw) return '';
   return raw
-    .replace(/^[:\s\-–—>|•*~]+/, '')
+    .replace(/^[:\s\-–—>|•*~✔✓O©¢\.\d\/\\#?_=+]+/, '')
     .replace(/\b(success|successful|completed|paid to|paid|payment to|payment from|payment|received from|received|verified|banking name|upi id|vpa|account|ac|xx|xxxx|via|check balance|split|repeat|share|view details|share receipt|done)\b/gi, '')
     .replace(/[+0-9()]{8,}/g, '') // remove phone numbers
     .replace(/[@#%^*_~|<>]/g, '')
@@ -227,13 +227,16 @@ export const parsePaymentText = (text) => {
   const lower = text.toLowerCase();
 
   // -------------------------------------------------------------
-  // 1. Detect Payment App (Keywords + UPI VPA handle detection)
+  // 1. Detect Payment App (Keywords, signatures + UPI handle detection)
   // -------------------------------------------------------------
   if (
     lower.includes('phonepe') || 
     lower.includes('phone pe') || 
     lower.includes('phone-pe') ||
-    /@(?:ybl|ibl|axl)\b/i.test(text)
+    /@(?:ybl|ibl|axl)\b/i.test(text) ||
+    /\bT[0-9]{18,24}\b/.test(text) ||
+    (lower.includes('banking name') && (lower.includes('debited from') || lower.includes('transfer details'))) ||
+    lower.includes('transfer details')
   ) {
     result.appName = 'PhonePe';
   } else if (
@@ -242,14 +245,16 @@ export const parsePaymentText = (text) => {
     lower.includes('g pay') || 
     lower.includes('tez') ||
     /@(?:okhdfcbank|oksbi|okaxis|okicici)\b/i.test(text) ||
-    lower.includes('google transaction id')
+    lower.includes('google transaction id') ||
+    /cicag/i.test(text)
   ) {
     result.appName = 'Google Pay';
   } else if (
     lower.includes('paytm') || 
     lower.includes('pay tm') || 
     /@(?:paytm|pthdfc|ptsbi)\b/i.test(text) ||
-    lower.includes('one97')
+    lower.includes('one97') ||
+    lower.includes('paytm payments bank')
   ) {
     result.appName = 'Paytm';
   } else if (
@@ -336,58 +341,52 @@ export const parsePaymentText = (text) => {
   }
 
   // -------------------------------------------------------------
-  // 3. Extract Amount (Handles ₹, Rs, INR, misread symbols *, z, =, decimals)
+  // 3. Extract Amount (Handles ₹, â‚¹, Rs, INR, misread symbols *, z, =, ~, decimals & integers)
   // -------------------------------------------------------------
   const amountCandidates = [];
 
-  // Pass 1: Explicit currency symbol or prefix (₹, Rs, INR)
-  // Must NOT match digits that are part of longer numbers like UTR or account numbers!
-  const currencyRegex = /(?:₹|rs\.?|inr)\s*([0-9]{1,3}(?:,[0-9]{2,3})*(?:\.[0-9]{1,2})?|[0-9]{1,6}(?:\.[0-9]{1,2})?)(?![0-9])/gi;
+  // Pass 1: Explicit currency symbol or common OCR misreads for ₹ (?, *, z, ~, =, _, â‚¹, ¥, €, ¢)
+  const currencyRegex = /(?:₹|â‚¹|rs\.?|inr|[\?\*\~=_\^¥€¢£])\s*([0-9]{1,3}(?:,[0-9]{2,3})*(?:\.[0-9]{1,2})?|[0-9]{1,6}(?:\.[0-9]{1,2})?)(?![0-9])/gi;
   let cMatch;
   while ((cMatch = currencyRegex.exec(text)) !== null) {
     const rawVal = cMatch[1].replace(/,/g, '');
     const num = parseFloat(rawVal);
-    if (!isNaN(num) && num > 0 && num < 10000000) {
+    if (!isNaN(num) && num > 0 && num < 10000000 && num !== 2024 && num !== 2025 && num !== 2026 && num !== 2027) {
       const hasDecimals = cMatch[1].includes('.');
-      amountCandidates.push({ val: num, priority: hasDecimals ? 35 : 25 });
+      amountCandidates.push({ val: num, priority: hasDecimals ? 45 : 35 });
     }
   }
 
-  // Pass 2: Common OCR misread characters for ₹ (*, z, ¥, etc.) when followed by decimals
-  const ocrMisreadRegex = /(?:[*zZ¥€¢])\s*([0-9]{1,3}(?:,[0-9]{2,3})*\.[0-9]{2}|[0-9]{1,6}\.[0-9]{2})(?![0-9])/gi;
-  let ocrMatch;
-  while ((ocrMatch = ocrMisreadRegex.exec(text)) !== null) {
-    const rawVal = ocrMatch[1].replace(/,/g, '');
-    const num = parseFloat(rawVal);
-    if (!isNaN(num) && num > 0 && num < 10000000) {
-      amountCandidates.push({ val: num, priority: 20 });
-    }
-  }
-
-  // Pass 3: Context phrases like "Paid 72.00", "Amount: 1,050"
-  const contextRegex = /(?:paid|amount|total|sent|received|transferred)\s*(?:is|of|[:\-])?\s*[₹*zRs.]?\s*([0-9]{1,3}(?:,[0-9]{2,3})*(?:\.[0-9]{1,2})?|[0-9]{1,6}\.[0-9]{2})(?![0-9])/gi;
+  // Pass 2: Context phrases like "Paid 72.00", "Amount: 1,050", "Payment of 72"
+  const contextRegex = /(?:paid|amount|total|sent|received|transferred|transfer|payment|debited|credited)\s*(?:is|of|[:\-])?\s*[^\w\s]?\s*([0-9]{1,3}(?:,[0-9]{2,3})*(?:\.[0-9]{1,2})?|[0-9]{1,6}(?:\.[0-9]{1,2})?)(?![0-9])/gi;
   let ctxMatch;
   while ((ctxMatch = contextRegex.exec(text)) !== null) {
     const rawVal = ctxMatch[1].replace(/,/g, '');
     const num = parseFloat(rawVal);
-    if (!isNaN(num) && num > 0 && num < 10000000) {
-      amountCandidates.push({ val: num, priority: 15 });
+    if (!isNaN(num) && num > 0 && num < 10000000 && num !== 2024 && num !== 2025 && num !== 2026 && num !== 2027) {
+      amountCandidates.push({ val: num, priority: 38 });
     }
   }
 
-  // Pass 4: Standalone line with decimal currency e.g. "72.00" or "1,050.00"
-  lines.forEach((line) => {
-    const cleanLine = line.replace(/^[₹*zRs.\s]+|[,\s]+$/gi, '').trim();
+  // Pass 3: Standalone numbers on receipt lines (especially in top 10 lines)
+  lines.forEach((line, idx) => {
+    const cleanLine = line.replace(/^[^\w\d₹â‚¹]+|[^\w\d]+$/g, '').trim();
     if (/^[0-9]{1,3}(?:,[0-9]{2,3})*\.[0-9]{2}$/.test(cleanLine) || /^[0-9]{1,6}\.[0-9]{2}$/.test(cleanLine)) {
       const num = parseFloat(cleanLine.replace(/,/g, ''));
       if (!isNaN(num) && num > 0 && num < 10000000) {
-        amountCandidates.push({ val: num, priority: 18 });
+        amountCandidates.push({ val: num, priority: idx < 8 ? 40 : 25 });
+      }
+    } else if (/^[0-9]{1,5}$/.test(cleanLine)) {
+      const num = parseFloat(cleanLine);
+      if (!isNaN(num) && num > 0 && num < 10000000 && num !== 2024 && num !== 2025 && num !== 2026 && num !== 2027) {
+        if (idx < 6) {
+          amountCandidates.push({ val: num, priority: 28 });
+        }
       }
     }
   });
 
   if (amountCandidates.length > 0) {
-    // Sort by priority descending
     amountCandidates.sort((a, b) => b.priority - a.priority || b.val - a.val);
     result.amount = formatAmountValue(amountCandidates[0].val);
   }
@@ -439,15 +438,35 @@ export const parsePaymentText = (text) => {
   let extractedTo = '';
   let extractedFrom = '';
 
-  // Look for verified Banking Name (highest accuracy in PhonePe / GPay)
-  const bankingMatch = text.match(/(?:banking\s*name|verified\s*name)[:\s\-–—]+([A-Za-z0-9\s.&'-]{3,35})/i);
+  // Look for verified Banking Name or Beneficiary Name
+  const bankingRegex = /(?:banking\s*name|verified\s*name|beneficiary\s*name)\s*[:\-–—]?\s*([A-Za-z0-9\s.&'-]{3,40})/i;
+  const bankingMatch = text.match(bankingRegex);
   if (bankingMatch && bankingMatch[1]) {
-    const name = sanitizeName(bankingMatch[1]);
-    if (name.length >= 3) {
+    const firstLine = bankingMatch[1].split(/\r?\n/)[0].trim();
+    const name = sanitizeName(firstLine);
+    if (name.length >= 3 && !/^[0-9₹*z]/i.test(name)) {
       if (result.type === 'Sent') {
         extractedTo = name;
       } else {
         extractedFrom = name;
+      }
+    }
+  }
+
+  // Also check if "Banking Name" is on one line and the name is on the next line
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i].toLowerCase();
+    if (l === 'banking name' || l === 'verified name' || l.startsWith('banking name') || l.startsWith('verified name')) {
+      const inline = sanitizeName(lines[i].replace(/^(?:banking\s*name|verified\s*name)[:\s\-–—]*/i, ''));
+      if (inline.length >= 3) {
+        if (result.type === 'Sent') extractedTo = inline;
+        else extractedFrom = inline;
+      } else if (i + 1 < lines.length) {
+        const next = sanitizeName(lines[i + 1]);
+        if (next.length >= 3 && !/^[0-9₹*z]/i.test(next) && !next.toLowerCase().includes('utr')) {
+          if (result.type === 'Sent') extractedTo = next;
+          else extractedFrom = next;
+        }
       }
     }
   }
@@ -457,28 +476,91 @@ export const parsePaymentText = (text) => {
     const line = lines[i];
     const lineLower = line.toLowerCase();
 
-    // "Paid to <Name>" or "Payment to <Name>"
-    if (lineLower.startsWith('paid to') || lineLower.startsWith('payment to') || lineLower.startsWith('transferred to')) {
-      const inline = sanitizeName(line.replace(/^(?:paid to|payment to|transferred to)[:\s]*/i, ''));
-      if (inline.length >= 3) {
-        extractedTo = inline;
-      } else if (i + 1 < lines.length) {
-        const nextCandidate = sanitizeName(lines[i + 1]);
-        if (nextCandidate.length >= 3 && !/^[0-9₹*z]/i.test(nextCandidate)) {
-          extractedTo = nextCandidate;
+    // Check if line contains "paid to", "payment to", "sent to", "transferred to" anywhere in line
+    const paidToMatch = line.match(/(?:paid\s+to|payment\s+to|transferred\s+to|sent\s+to)\s*[:\-–—]?\s*(.*)/i);
+    if (paidToMatch) {
+      const inline = sanitizeName(paidToMatch[1]);
+      if (inline.length >= 3 && !/^[0-9₹*z]/i.test(inline)) {
+        if (!extractedTo) extractedTo = inline;
+      } else {
+        // Look up to 4 lines ahead for the recipient name, skipping currency lines or icons
+        for (let j = 1; j <= 4 && i + j < lines.length; j++) {
+          const nextLine = lines[i + j];
+          const nextSanitized = sanitizeName(nextLine);
+          // Check if this line is an amount or symbol
+          if (/^[0-9₹*z\?~=]/.test(nextLine) || nextLine.length < 2) continue;
+          // Check if it's a known non-name header or status
+          if (/^(?:transfer|transaction|debited|credited|view|repeat|share|check|completed|successful|failed)/i.test(nextSanitized)) continue;
+          
+          if (nextLine.includes('@')) {
+            const upiUser = nextLine.match(/\b([a-zA-Z][a-zA-Z0-9._-]{2,25})@/);
+            if (upiUser && !/^\d+$/.test(upiUser[1])) {
+              const formatted = upiUser[1].replace(/[._-]/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+              if (!extractedTo) extractedTo = formatted;
+            }
+            continue;
+          }
+
+          if (nextSanitized.length >= 3 && !extractedTo) {
+            extractedTo = nextSanitized;
+            break;
+          }
         }
       }
     }
 
-    // "Received from <Name>" or "Payment from <Name>"
-    if (lineLower.startsWith('received from') || lineLower.startsWith('payment from') || lineLower.startsWith('transferred by')) {
-      const inline = sanitizeName(line.replace(/^(?:received from|payment from|transferred by)[:\s]*/i, ''));
+    // Check "Received from", "Payment from", "Transferred by"
+    const receivedFromMatch = line.match(/(?:received\s+from|payment\s+from|transferred\s+by)\s*[:\-–—]?\s*(.*)/i);
+    if (receivedFromMatch) {
+      const inline = sanitizeName(receivedFromMatch[1]);
+      if (inline.length >= 3 && !/^[0-9₹*z]/i.test(inline)) {
+        if (!extractedFrom) extractedFrom = inline;
+      } else {
+        for (let j = 1; j <= 4 && i + j < lines.length; j++) {
+          const nextLine = lines[i + j];
+          const nextSanitized = sanitizeName(nextLine);
+          if (/^[0-9₹*z\?~=]/.test(nextLine) || nextLine.length < 2) continue;
+          if (/^(?:transfer|transaction|debited|credited|view|repeat|share|check|completed|successful)/i.test(nextSanitized)) continue;
+
+          if (nextLine.includes('@')) {
+            const upiUser = nextLine.match(/\b([a-zA-Z][a-zA-Z0-9._-]{2,25})@/);
+            if (upiUser && !/^\d+$/.test(upiUser[1])) {
+              const formatted = upiUser[1].replace(/[._-]/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+              if (!extractedFrom) extractedFrom = formatted;
+            }
+            continue;
+          }
+
+          if (nextSanitized.length >= 3 && !extractedFrom) {
+            extractedFrom = nextSanitized;
+            break;
+          }
+        }
+      }
+    }
+
+    // Check "Debited from <Bank/Account>" (Same line or next line)
+    if (/debited\s+from/i.test(line)) {
+      const inline = sanitizeName(line.replace(/.*debited\s+from[:\s\-–—]*/i, ''));
       if (inline.length >= 3) {
-        extractedFrom = inline;
+        if (!extractedFrom) extractedFrom = inline;
       } else if (i + 1 < lines.length) {
-        const nextCandidate = sanitizeName(lines[i + 1]);
-        if (nextCandidate.length >= 3 && !/^[0-9₹*z]/i.test(nextCandidate)) {
-          extractedFrom = nextCandidate;
+        const next = sanitizeName(lines[i + 1]);
+        if (next.length >= 3 && !/^[0-9₹*z]/i.test(next) && !next.toLowerCase().includes('utr')) {
+          if (!extractedFrom) extractedFrom = next;
+        }
+      }
+    }
+
+    // Check "Credited to <Bank/Account>"
+    if (/credited\s+to/i.test(line)) {
+      const inline = sanitizeName(line.replace(/.*credited\s+to[:\s\-–—]*/i, ''));
+      if (inline.length >= 3) {
+        if (!extractedTo) extractedTo = inline;
+      } else if (i + 1 < lines.length) {
+        const next = sanitizeName(lines[i + 1]);
+        if (next.length >= 3 && !/^[0-9₹*z]/i.test(next) && !next.toLowerCase().includes('utr')) {
+          if (!extractedTo) extractedTo = next;
         }
       }
     }
@@ -500,25 +582,15 @@ export const parsePaymentText = (text) => {
         if (name.length >= 3) extractedFrom = name;
       }
     }
-
-    // "Debited from <Bank/Account>"
-    if (!extractedFrom && lineLower.includes('debited from')) {
-      const rem = sanitizeName(line.replace(/.*debited from[:\s]*/i, ''));
-      if (rem.length >= 3) extractedFrom = rem;
-    }
-
-    // "Credited to <Bank/Account>"
-    if (!extractedTo && lineLower.includes('credited to')) {
-      const rem = sanitizeName(line.replace(/.*credited to[:\s]*/i, ''));
-      if (rem.length >= 3) extractedTo = rem;
-    }
   }
 
-  // Fallback to UPI VPA ID (e.g. rahul.sharma@okaxis)
+  // Fallback to UPI VPA ID (e.g. rahul.sharma@okaxis or surveen@ybl)
   if (!extractedTo && result.type === 'Sent') {
-    const upiMatch = text.match(/\b([a-zA-Z0-9._-]{3,25})@(okhdfcbank|oksbi|okaxis|okicici|paytm|ybl|ibl|axl|upi|apl)\b/i);
+    const upiMatch = text.match(/\b([a-zA-Z][a-zA-Z0-9._-]{2,25})@(okhdfcbank|oksbi|okaxis|okicici|paytm|ybl|ibl|axl|upi|apl|barodampay|federal|kotak|idfcbank)\b/i);
     if (upiMatch && upiMatch[1]) {
-      extractedTo = upiMatch[1].replace(/[._-]/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+      if (!/^\d+$/.test(upiMatch[1])) {
+        extractedTo = upiMatch[1].replace(/[._-]/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+      }
     }
   }
 
