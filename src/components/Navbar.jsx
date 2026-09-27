@@ -1,6 +1,6 @@
 import React from 'react';
 import { 
-  Receipt, Database, Settings, ShieldCheck, Sun, Moon, LogOut, User 
+  Receipt, Database, Settings, ShieldCheck, Sun, Moon, LogOut, RefreshCw 
 } from 'lucide-react';
 
 export default function Navbar({ 
@@ -10,7 +10,10 @@ export default function Navbar({
   theme = 'dark',
   onToggleTheme,
   user,
-  onLogout
+  onLogout,
+  isSyncing = false,
+  onSync,
+  lastSyncTime
 }) {
   const isConnected = !!webhookUrl;
   const displayName = user?.fullName || 'PRADEEP KUMAR SHARMA';
@@ -55,6 +58,27 @@ export default function Navbar({
             <ShieldCheck className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
           </div>
 
+          {/* Cloud Sync Refresh Button */}
+          {isConnected && (
+            <button
+              onClick={onSync}
+              disabled={isSyncing}
+              title={
+                isSyncing 
+                  ? 'Syncing across devices...' 
+                  : lastSyncTime 
+                  ? `Synced at ${new Date(lastSyncTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. Click to refresh.` 
+                  : 'Sync data with Google Sheets'
+              }
+              className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 transition flex items-center gap-1.5"
+            >
+              <RefreshCw className={`w-4 h-4 text-indigo-500 dark:text-indigo-400 ${isSyncing ? 'animate-spin' : ''}`} />
+              <span className="text-[11px] font-semibold hidden lg:inline">
+                {isSyncing ? 'Syncing...' : 'Sync'}
+              </span>
+            </button>
+          )}
+
           {/* Dark / Light Theme Toggle Button */}
           <button
             onClick={onToggleTheme}
@@ -82,10 +106,10 @@ export default function Navbar({
             }`} />
             <Database className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">
-              {isConnected ? 'Sheets Connected' : 'Connect Sheets'}
+              {isConnected ? 'Sheets Live' : 'Connect Sheets'}
             </span>
             <span className="sm:hidden">
-              {isConnected ? 'Sheets' : 'Setup'}
+              {isConnected ? 'Live' : 'Setup'}
             </span>
           </button>
 
@@ -101,7 +125,7 @@ export default function Navbar({
           {/* Logout Button */}
           <button
             onClick={onLogout}
-            title="Lock Vault & Log Out"
+            title="Lock Vault & Log Out (Data remains safe in cloud)"
             className="p-2 rounded-xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/50 border border-rose-200 dark:border-rose-900/50 text-rose-600 dark:text-rose-400 transition"
           >
             <LogOut className="w-4 h-4" />

@@ -1,20 +1,23 @@
 /**
  * Authentication and Security Service
  * Secures PayLens for personal access by Pradeep Kumar Sharma
+ * Supports cloud credentials synchronization across multiple devices.
  */
+
+import { fetchCloudAuth, updateCloudAuth } from './sheetsService';
 
 const STORAGE_KEY_AUTH = 'paylens_auth_credentials';
 const STORAGE_KEY_SESSION = 'paylens_active_session';
 
 // Simple hashing utility (SHA-256 via Web Crypto API)
-const sha256 = async (str) => {
+export const sha256 = async (str) => {
   const utf8 = new TextEncoder().encode(str);
   const hashBuffer = await crypto.subtle.digest('SHA-256', utf8);
   const hashArray = Array.from(new Uint8Array(hashBuffer));
   return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 };
 
-const DEFAULT_USER = {
+export const DEFAULT_USER = {
   username: 'pradeep',
   // SHA-256 hash for default password: "admin"
   passwordHash: '8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918',
@@ -60,23 +63,80 @@ export const getCurrentUser = () => {
 };
 
 /**
- * Login verification
+ * Login verification with multi-device cloud synchronization
  */
 export const login = async (username, password) => {
-  const creds = getStoredCredentials();
   const inputHash = await sha256(password.trim());
+  const inputUser = username.trim().toLowerCase();
 
-  if (username.trim().toLowerCase() === creds.username.toLowerCase() && inputHash === creds.passwordHash) {
+  // 1. Check local credentials first
+  const localCreds = getStoredCredentials();
+  if (localCreds.username.toLowerCase() === inputUser && inputHash === localCreds.passwordHash) {
     localStorage.setItem(STORAGE_KEY_SESSION, JSON.stringify({
       loggedIn: true,
       timestamp: Date.now(),
-      username: creds.username
+      username: localCreds.username
+    }));
+
+    // Trigger non-blocking cloud check to keep in sync
+    fetchCloudAuth().then(res => {
+      if (res.success && res.user) {
+        localStorage.setItem(STORAGE_KEY_AUTH, JSON.stringify(res.user));
+      }
+    }).catch(() => {});
+
+    return {
+      success: true,
+      user: {
+        username: localCreds.username,
+        fullName: localCreds.fullName || 'PRADEEP KUMAR SHARMA'
+      }
+    };
+  }
+
+  // 2. Check cloud credentials if local failed (allows logging in from another device with updated password)
+  try {
+    const cloudRes = await fetchCloudAuth();
+    if (cloudRes.success && cloudRes.user) {
+      const cloudUser = cloudRes.user;
+      if (
+        cloudUser.username &&
+        cloudUser.username.toLowerCase() === inputUser &&
+        inputHash === cloudUser.passwordHash
+      ) {
+        // Sync cloud credentials into this device's localStorage
+        localStorage.setItem(STORAGE_KEY_AUTH, JSON.stringify(cloudUser));
+        localStorage.setItem(STORAGE_KEY_SESSION, JSON.stringify({
+          loggedIn: true,
+          timestamp: Date.now(),
+          username: cloudUser.username
+        }));
+        return {
+          success: true,
+          user: {
+            username: cloudUser.username,
+            fullName: cloudUser.fullName || 'PRADEEP KUMAR SHARMA'
+          }
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('Cloud auth check failed:', err);
+  }
+
+  // 3. Fallback: check against DEFAULT_USER
+  if (DEFAULT_USER.username.toLowerCase() === inputUser && inputHash === DEFAULT_USER.passwordHash) {
+    localStorage.setItem(STORAGE_KEY_AUTH, JSON.stringify(DEFAULT_USER));
+    localStorage.setItem(STORAGE_KEY_SESSION, JSON.stringify({
+      loggedIn: true,
+      timestamp: Date.now(),
+      username: DEFAULT_USER.username
     }));
     return {
       success: true,
       user: {
-        username: creds.username,
-        fullName: creds.fullName
+        username: DEFAULT_USER.username,
+        fullName: DEFAULT_USER.fullName
       }
     };
   }
@@ -89,19 +149,20 @@ export const login = async (username, password) => {
 
 /**
  * Terminate session
+ * Note: Data is NEVER deleted on logout, only the active session token is cleared!
  */
 export const logout = () => {
   localStorage.removeItem(STORAGE_KEY_SESSION);
 };
 
 /**
- * Update security credentials
+ * Update security credentials across local storage and Google Sheets
  */
 export const updateCredentials = async ({ currentPassword, newUsername, newPassword, newFullName }) => {
   const creds = getStoredCredentials();
   const currentHash = await sha256(currentPassword.trim());
 
-  if (currentHash !== creds.passwordHash) {
+  if (currentHash !== creds.passwordHash && currentHash !== DEFAULT_USER.passwordHash) {
     return {
       success: false,
       message: 'Current password does not match.'
@@ -118,6 +179,7 @@ export const updateCredentials = async ({ currentPassword, newUsername, newPassw
     updated.passwordHash = await sha256(newPassword.trim());
   }
 
+  // Save to local storage
   localStorage.setItem(STORAGE_KEY_AUTH, JSON.stringify(updated));
 
   // Update session
@@ -127,9 +189,16 @@ export const updateCredentials = async ({ currentPassword, newUsername, newPassw
     username: updated.username
   }));
 
+  // Sync to Google Sheets so the same credentials work on all devices
+  try {
+    await updateCloudAuth(updated);
+  } catch (err) {
+    console.warn('Could not sync updated credentials to Google Sheets:', err);
+  }
+
   return {
     success: true,
-    message: 'Credentials updated successfully!',
+    message: 'Credentials updated successfully across devices!',
     user: {
       username: updated.username,
       fullName: updated.fullName

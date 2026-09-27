@@ -1,7 +1,7 @@
 import React from 'react';
 import { 
   ArrowUpRight, ArrowDownLeft, FileText, 
-  Smartphone, Wallet, TrendingUp 
+  Wallet, TrendingUp 
 } from 'lucide-react';
 
 export default function MetricsCards({ transactions = [] }) {
@@ -18,7 +18,6 @@ export default function MetricsCards({ transactions = [] }) {
 
   let totalSent = 0;
   let totalReceived = 0;
-  const appCounts = {};
 
   transactions.forEach((tx) => {
     const val = parseAmountNumber(tx.amount);
@@ -27,21 +26,9 @@ export default function MetricsCards({ transactions = [] }) {
     } else {
       totalSent += val;
     }
-
-    const app = tx.appName || 'Unknown';
-    appCounts[app] = (appCounts[app] || 0) + 1;
   });
 
-  // Determine top app
-  let topApp = 'None';
-  let maxAppCount = 0;
-  Object.entries(appCounts).forEach(([app, count]) => {
-    if (count > maxAppCount) {
-      maxAppCount = count;
-      topApp = app;
-    }
-  });
-
+  const totalAmount = totalSent + totalReceived;
   const netBalance = totalReceived - totalSent;
 
   const formatCurrency = (val) => {
@@ -83,10 +70,10 @@ export default function MetricsCards({ transactions = [] }) {
       iconBg: 'bg-emerald-500/20 text-emerald-400'
     },
     {
-      title: 'Top Payment App',
-      value: topApp,
-      subtext: maxAppCount > 0 ? `${maxAppCount} transactions recorded` : 'No data yet',
-      icon: Smartphone,
+      title: 'Total Amount',
+      value: formatCurrency(totalAmount),
+      subtext: 'Sent + Received combined',
+      icon: Wallet,
       color: 'amber',
       gradient: 'from-amber-500/10 to-amber-500/5',
       border: 'border-amber-500/20',

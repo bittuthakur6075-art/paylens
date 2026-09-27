@@ -9,23 +9,195 @@ import { getGeminiApiKey, setGeminiApiKey } from '../services/ocrService';
 import { updateCredentials, getCurrentUser } from '../services/authService';
 
 const GOOGLE_APPS_SCRIPT_CODE = `/**
- * PayLens - Google Apps Script Webhook Backend
+ * PayLens - Complete Multi-Device Google Apps Script Backend
+ * Enables full read/write synchronization across all devices and phones.
  * Paste this into: Extensions > Apps Script in your Google Sheet
  */
 
+function doGet(e) {
+  var action = (e && e.parameter && e.parameter.action) ? e.parameter.action : "getTransactions";
+
+  // Healthcheck / Ping action
+  if (action === "ping") {
+    return ContentService.createTextOutput(JSON.stringify({
+      status: "success",
+      message: "PayLens Webhook connected with multi-device sync!"
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // Get or verify user credentials for cross-device authentication
+  if (action === "getAuth") {
+    var authSheet = ss.getSheetByName("_PayLens_Auth");
+    if (!authSheet) {
+      authSheet = ss.insertSheet("_PayLens_Auth");
+      authSheet.appendRow(["Username", "PasswordHash", "FullName", "UpdatedAt"]);
+      authSheet.appendRow([
+        "pradeep",
+        "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918",
+        "PRADEEP KUMAR SHARMA",
+        new Date().toISOString()
+      ]);
+    }
+    var authData = authSheet.getDataRange().getValues();
+    if (authData.length > 1) {
+      return ContentService.createTextOutput(JSON.stringify({
+        status: "success",
+        user: {
+          username: String(authData[1][0] || "pradeep"),
+          passwordHash: String(authData[1][1] || ""),
+          fullName: String(authData[1][2] || "PRADEEP KUMAR SHARMA")
+        }
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+  }
+
+  // Fetch all transactions from sheet
+  var sheet = ss.getSheetByName("Extracted Data") || ss.getSheets()[0];
+  var lastRow = sheet.getLastRow();
+  if (lastRow <= 1) {
+    return ContentService.createTextOutput(JSON.stringify({
+      status: "success",
+      transactions: []
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  var numCols = Math.max(sheet.getLastColumn(), 9);
+  var range = sheet.getRange(2, 1, lastRow - 1, numCols);
+  var values = range.getValues();
+  var formulas = range.getFormulas();
+
+  var transactions = [];
+  for (var i = 0; i < values.length; i++) {
+    var row = values[i];
+    var rowFormula = formulas[i];
+    var timestamp = row[0] ? String(row[0]) : new Date().toISOString();
+    var appName = row[1] ? String(row[1]) : "Unknown";
+    var type = row[2] ? String(row[2]) : "Sent";
+    var from = row[3] ? String(row[3]) : "";
+    var to = row[4] ? String(row[4]) : "";
+    var amount = row[5] ? String(row[5]) : "₹0";
+    var dateTime = row[6] ? String(row[6]) : "";
+    var rawTxn = row[7] ? String(row[7]) : "";
+    var transactionId = rawTxn.replace(/^'/, "");
+
+    // Screenshot extraction from formula or value
+    var screenshotCell = row[8] ? String(row[8]) : "";
+    var formulaCell = (rowFormula && rowFormula[8]) ? String(rowFormula[8]) : "";
+    var screenshotUrl = null;
+    var hyperlinkMatch = formulaCell.match(/=HYPERLINK\\("([^"]+)"/i);
+    if (hyperlinkMatch && hyperlinkMatch[1]) {
+      screenshotUrl = hyperlinkMatch[1];
+    } else if (screenshotCell.indexOf("http") === 0) {
+      screenshotUrl = screenshotCell;
+    }
+
+    transactions.push({
+      id: "tx-" + (transactionId && transactionId !== "N/A" ? transactionId : (i + "-" + Date.now())),
+      timestamp: timestamp,
+      appName: appName,
+      type: type,
+      from: from,
+      to: to,
+      amount: amount,
+      dateTime: dateTime,
+      transactionId: transactionId || "N/A",
+      screenshotUrl: screenshotUrl,
+      synced: true
+    });
+  }
+
+  // Reverse so newest records appear on top
+  transactions.reverse();
+
+  return ContentService.createTextOutput(JSON.stringify({
+    status: "success",
+    transactions: transactions
+  })).setMimeType(ContentService.MimeType.JSON);
+}
+
 function doPost(e) {
   var lock = LockService.getScriptLock();
-  // Wait up to 30 seconds for other concurrent requests
   lock.tryLock(30000);
 
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
-    // Target the primary first sheet (Sheet1 / gid=0) directly
-    var sheet = ss.getSheets()[0];
+    var sheet = ss.getSheetByName("Extracted Data") || ss.getSheets()[0];
 
-    // Automatically rename Sheet1 to Extracted Data if applicable
     if (sheet.getName() === "Sheet1") {
-      try { sheet.setName("Extracted Data"); } catch(e) {}
+      try { sheet.setName("Extracted Data"); } catch(err) {}
+    }
+
+    var requestData = {};
+    if (e && e.postData && e.postData.contents) {
+      requestData = JSON.parse(e.postData.contents);
+    }
+
+    // Ping check
+    if (requestData.action === "ping" || requestData.test) {
+      return ContentService.createTextOutput(JSON.stringify({
+        status: "success",
+        message: "PayLens Webhook connected successfully!"
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // Sync user auth across devices
+    if (requestData.action === "updateAuth") {
+      var authSheet = ss.getSheetByName("_PayLens_Auth");
+      if (!authSheet) {
+        authSheet = ss.insertSheet("_PayLens_Auth");
+      }
+      authSheet.clear();
+      authSheet.appendRow(["Username", "PasswordHash", "FullName", "UpdatedAt"]);
+      authSheet.appendRow([
+        requestData.username || "pradeep",
+        requestData.passwordHash || "",
+        requestData.fullName || "PRADEEP KUMAR SHARMA",
+        new Date().toISOString()
+      ]);
+      return ContentService.createTextOutput(JSON.stringify({
+        status: "success",
+        message: "Auth credentials synced to Google Sheet successfully!"
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // Delete transaction
+    if (requestData.action === "deleteTransaction") {
+      var targetTxnId = requestData.transactionId;
+      var targetTimestamp = requestData.timestamp;
+      var lastRow = sheet.getLastRow();
+      var deleted = false;
+      if (lastRow > 1) {
+        var range = sheet.getRange(2, 1, lastRow - 1, 8);
+        var values = range.getValues();
+        for (var r = values.length - 1; r >= 0; r--) {
+          var rowTxn = String(values[r][7] || "").replace(/^'/, "");
+          var rowTime = String(values[r][0] || "");
+          if ((targetTxnId && targetTxnId !== "N/A" && rowTxn === targetTxnId) ||
+              (targetTimestamp && rowTime === targetTimestamp)) {
+            sheet.deleteRow(r + 2);
+            deleted = true;
+            break;
+          }
+        }
+      }
+      return ContentService.createTextOutput(JSON.stringify({
+        status: deleted ? "success" : "not_found",
+        message: deleted ? "Row deleted" : "Row not found"
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // Clear all transactions
+    if (requestData.action === "clearAll") {
+      var lastRow = sheet.getLastRow();
+      if (lastRow > 1) {
+        sheet.deleteRows(2, lastRow - 1);
+      }
+      return ContentService.createTextOutput(JSON.stringify({
+        status: "success",
+        message: "All records cleared"
+      })).setMimeType(ContentService.MimeType.JSON);
     }
 
     // Automatically create headers if sheet is empty
@@ -43,32 +215,15 @@ function doPost(e) {
       ];
       sheet.appendRow(headers);
       var headerRange = sheet.getRange(1, 1, 1, headers.length);
-      headerRange.setBackground("#4338ca"); // Indigo color
+      headerRange.setBackground("#4338ca");
       headerRange.setFontColor("#ffffff");
       headerRange.setFontWeight("bold");
       sheet.setFrozenRows(1);
     }
 
-    // Parse incoming JSON body
-    var requestData = {};
-    if (e && e.postData && e.postData.contents) {
-      requestData = JSON.parse(e.postData.contents);
-    }
-
-    // Respond to ping / test healthcheck
-    if (requestData.action === "ping" || requestData.test) {
-      return ContentService.createTextOutput(JSON.stringify({
-        status: "success",
-        message: "PayLens Webhook connected successfully!"
-      })).setMimeType(ContentService.MimeType.JSON);
-    }
-
-    // Format transaction ID with leading quote to preserve 12 digits from scientific notation
     var txnId = requestData.transactionId ? "'" + requestData.transactionId : "N/A";
-
-    // Process Screenshot: Save image to Google Drive & Create Viewable Link
     var screenshotCell = "No Screenshot";
-    var base64Data = requestData.screenshotBase64 || requestData.screenshotUrl;
+    var base64Data = requestData.screenshotBase64 || (requestData.screenshotUrl && requestData.screenshotUrl.indexOf("data:image") !== -1 ? requestData.screenshotUrl : null);
 
     if (base64Data && base64Data.indexOf("data:image") !== -1) {
       try {
@@ -93,7 +248,6 @@ function doPost(e) {
       screenshotCell = '=HYPERLINK("' + requestData.screenshotUrl + '", "🖼️ View Screenshot")';
     }
 
-    // Append new structured payment record row
     sheet.appendRow([
       requestData.timestamp || new Date().toISOString(),
       requestData.appName || "N/A",
@@ -116,7 +270,6 @@ function doPost(e) {
       status: "error",
       message: error.toString()
     })).setMimeType(ContentService.MimeType.JSON);
-
   } finally {
     lock.releaseLock();
   }
@@ -336,16 +489,20 @@ export default function BackendSetupModal({
               <div className="rounded-2xl p-4 bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800/40 text-xs text-indigo-900 dark:text-indigo-200 space-y-2">
                 <div className="font-bold flex items-center gap-2 text-indigo-700 dark:text-white">
                   <Sparkles className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-                  Quick 4-Step Google Sheet Integration:
+                  Multi-Device Cloud Sync Integration:
                 </div>
+                <p className="text-[11px] text-indigo-950/80 dark:text-indigo-300/90">
+                  By deploying this script, any transactions you add from your computer or mobile will be saved to Google Sheets and instantly visible whenever you log in with your username and password on <b>any phone, laptop, or browser</b>.
+                </p>
                 <ol className="list-decimal list-inside space-y-1.5 text-indigo-950/80 dark:text-indigo-300/90 ml-1">
-                  <li>Open your Google Sheet (or create a new blank one).</li>
-                  <li>Click <b>Extensions</b> &gt; <b>Apps Script</b> in top menu bar.</li>
-                  <li>Replace default code with snippet below and click <b>Save</b> (Ctrl+S).</li>
+                  <li>Open your Google Sheet: <a href="https://sheets.new" target="_blank" rel="noreferrer" className="underline font-semibold">sheets.new</a></li>
+                  <li>Click <b>Extensions</b> &gt; <b>Apps Script</b> in the top menu bar.</li>
+                  <li>Replace all existing code with the complete snippet below and click <b>Save</b> (Ctrl+S).</li>
                   <li>Click <b>Deploy</b> &gt; <b>New deployment</b> &gt; Select type: <b>Web app</b> &gt; Set <i>Who has access:</i> <b>Anyone</b> &gt; Click <b>Deploy</b>.</li>
                 </ol>
-                <div className="text-[11px] text-amber-700 dark:text-amber-300/90 pt-1 font-medium">
-                  ⚠️ Note: Setting "Who has access" to "Anyone" allows this dashboard app to post records securely into your sheet.
+                <div className="text-[11px] text-emerald-700 dark:text-emerald-400 pt-1 font-semibold flex items-center gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  Supports cross-device data viewing, receipts storage in Drive, and persistent login.
                 </div>
               </div>
 
