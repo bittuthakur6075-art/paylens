@@ -15,6 +15,7 @@ import DatabasePage from './pages/DatabasePage';
 import UsersPage from './pages/UsersPage';
 import SettingsPage from './pages/SettingsPage';
 import ImportStatementPage from './pages/ImportStatementPage';
+import SaleOrderPage from './pages/SaleOrderPage';
 
 import { 
   submitTransaction, 
@@ -499,6 +500,13 @@ export default function App() {
                 webhookUrl={webhookUrl}
                 onSwitchToImport={() => setActiveTab('import')}
               />
+            </section>
+          )}
+
+          {/* PAGE: Sale Order Studio */}
+          {activeTab === 'sale-order' && (
+            <section aria-label="Sale Order Studio">
+              <SaleOrderPage />
             </section>
           )}
 

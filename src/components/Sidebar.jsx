@@ -22,7 +22,8 @@ import {
   PanelLeftClose,
   PieChart,
   HardDrive,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Receipt
 } from 'lucide-react';
 
 export default function Sidebar({
@@ -59,6 +60,12 @@ export default function Sidebar({
         { id: 'dashboard', label: 'Dashboard', icon: LayoutGrid, highlight: true },
         { id: 'all', label: 'All-in-One Cockpit', icon: BarChart3 },
         { id: 'search', label: 'Find Data', icon: Search, shortcut: 'Ctrl K', action: onOpenSearch }
+      ]
+    },
+    {
+      group: 'Billing & Orders',
+      items: [
+        { id: 'sale-order', label: 'Sale Order', icon: Receipt, badge: 'PDF' }
       ]
     },
     {

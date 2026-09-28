@@ -40,6 +40,8 @@ export default function Navbar({
         return 'Users & Access Control';
       case 'settings':
         return 'Account & Security Settings';
+      case 'sale-order':
+        return 'Sale Order Studio';
       default:
         return 'Analytics Dashboard';
     }
@@ -65,6 +67,8 @@ export default function Navbar({
         return 'Team accounts, roles & multi-device credentials';
       case 'settings':
         return 'Profile details, passwords, AI keys & preferences';
+      case 'sale-order':
+        return 'Create GST sale orders, calculate taxes & download PDF';
       default:
         return 'Real-time payment data & OCR processing';
     }
