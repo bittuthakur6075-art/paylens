@@ -2,10 +2,19 @@ import React, { useState, useRef, useEffect } from 'react';
 import { 
   Upload, Image as ImageIcon, Sparkles, Send, 
   RefreshCw, CheckCircle2, AlertCircle, X, Eye, 
-  FileCheck, Shield, ChevronDown, Wand2, ArrowRightLeft
+  FileCheck, Shield, ChevronDown, Wand2, ArrowRightLeft,
+  Zap,
+  FileSpreadsheet
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
-import { extractReceiptData, getGeminiApiKey, setGeminiApiKey } from '../services/ocrService';
+import { 
+  extractReceiptData, 
+  getGeminiApiKey, 
+  setGeminiApiKey, 
+  warmupOCR, 
+  getOCRMode, 
+  setOCRMode 
+} from '../services/ocrService';
 
 const COMMON_APPS = [
   'PhonePe',
@@ -29,8 +38,11 @@ const COMMON_APPS = [
 export default function UploadForm({ 
   onSubmitTransaction, 
   onViewImage, 
-  webhookUrl 
+  webhookUrl,
+  onSwitchToImport,
+  userRole = 'write'
 }) {
+  const isReadOnly = userRole === 'read';
   const [imageFile, setImageFile] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -40,6 +52,8 @@ export default function UploadForm({
   const [extractProgress, setExtractProgress] = useState({ progress: 0, message: '' });
   const [isAutoFilled, setIsAutoFilled] = useState(false);
   const [extractError, setExtractError] = useState(null);
+  const [ocrMode, setOcrModeState] = useState(() => getOCRMode());
+  const [extractDuration, setExtractDuration] = useState(null);
 
   // Form Fields
   const [formData, setFormData] = useState({
@@ -56,6 +70,11 @@ export default function UploadForm({
   const [submitFeedback, setSubmitFeedback] = useState(null);
   const fileInputRef = useRef(null);
 
+  // Pre-warm OCR worker in the background immediately
+  useEffect(() => {
+    warmupOCR();
+  }, []);
+
   // Gemini Vision AI Key State for 100% accurate receipt extraction
   const [geminiApiKey, setGeminiApiKeyState] = useState(getGeminiApiKey());
   const [showKeyModal, setShowKeyModal] = useState(false);
@@ -65,8 +84,18 @@ export default function UploadForm({
     setGeminiApiKey(key);
     setGeminiApiKeyState(key ? key.trim() : '');
     setShowKeyModal(false);
-    if (imagePreview && key.trim()) {
+    if (key?.trim()) {
+      handleModeChange('ai');
+    } else if (imagePreview) {
       handleAutoExtract(imagePreview);
+    }
+  };
+
+  const handleModeChange = (newMode) => {
+    setOCRMode(newMode);
+    setOcrModeState(newMode);
+    if (imagePreview) {
+      handleAutoExtract(imagePreview, newMode);
     }
   };
 
@@ -128,7 +157,7 @@ export default function UploadForm({
     }
   };
 
-  const handleAutoExtract = async (targetSource = null) => {
+  const handleAutoExtract = async (targetSource = null, overrideMode = null) => {
     const validTarget = (typeof targetSource === 'string' && targetSource.length > 0) ? targetSource : null;
     const imgSource = validTarget || imagePreview;
     if (!imgSource) {
@@ -136,9 +165,15 @@ export default function UploadForm({
       return;
     }
 
+    const modeToUse = overrideMode || ocrMode;
+    const startTime = Date.now();
+    setExtractDuration(null);
     setIsExtracting(true);
     setExtractError(null);
-    setExtractProgress({ progress: 15, message: 'Preprocessing image for sharp OCR recognition...' });
+    setExtractProgress({ 
+      progress: 20, 
+      message: modeToUse === 'fast' ? '⚡ Lightning scan starting...' : 'Contacting AI Vision...' 
+    });
 
     try {
       const extracted = await extractReceiptData(imgSource, (update) => {
@@ -146,7 +181,10 @@ export default function UploadForm({
           progress: update.progress || 50,
           message: update.message || 'Extracting recipient, amount & transaction info...'
         });
-      });
+      }, { mode: modeToUse });
+
+      const durationSec = ((Date.now() - startTime) / 1000).toFixed(1);
+      setExtractDuration(durationSec);
 
       // Update form state with parsed values
       setFormData(prev => ({
@@ -215,16 +253,30 @@ export default function UploadForm({
     setIsSubmitting(true);
     setSubmitFeedback(null);
 
+    const isReceived = formData.type === 'Received';
+    const cleanDateTime = formData.dateTime || new Date().toLocaleString('en-IN');
+    const timeMatch = cleanDateTime.match(/\b([0-1]?[0-9]:[0-5][0-9](?::[0-5][0-9])?\s*(?:AM|PM|am|pm)?)\b/);
+
     const payload = {
       appName: formData.appName,
       type: formData.type,
-      from: formData.from || (formData.type === 'Sent' ? 'You' : 'Unknown Sender'),
-      to: formData.to || (formData.type === 'Received' ? 'You' : 'Unknown Receiver'),
+      from: formData.from || (formData.type === 'Sent' ? 'You (Self)' : 'Customer'),
+      to: formData.to || (formData.type === 'Received' ? 'You (Self)' : 'Merchant'),
       amount: formData.amount,
-      dateTime: formData.dateTime || new Date().toLocaleString('en-IN'),
+      dateTime: cleanDateTime,
       transactionId: formData.transactionId || `TXN${Date.now().toString().slice(-8)}`,
       screenshotUrl: imagePreview || null,
-      id: `tx-${Date.now()}`
+      id: `tx-${Date.now()}`,
+      // 10 Standard Schema Fields
+      date: cleanDateTime.split(/[\s,]+/)[0],
+      time: timeMatch ? timeMatch[1] : '',
+      transactionDetails: isReceived ? formData.from : formData.to,
+      otherDetails: '-',
+      yourAccount: 'Self Account',
+      upiRefNo: formData.transactionId || '-',
+      orderId: '-',
+      remarks: '-',
+      tags: isReceived ? 'UPI Inflow' : 'Payment / Expense'
     };
 
     try {
@@ -262,6 +314,30 @@ export default function UploadForm({
 
   return (
     <div className="bg-white dark:bg-slate-900/70 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 sm:p-6 backdrop-blur-xl shadow-lg dark:shadow-xl flex flex-col gap-6 transition-colors">
+      {/* Top Switcher: Single Receipt OCR vs Multi Statement Import */}
+      {onSwitchToImport && (
+        <div className="flex p-1 rounded-2xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700">
+          <button
+            type="button"
+            className="flex-1 py-2 px-3 rounded-xl bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 font-bold text-xs flex items-center justify-center gap-2 shadow-sm"
+          >
+            <Wand2 className="w-3.5 h-3.5" />
+            <span>Single Receipt OCR</span>
+          </button>
+          <button
+            type="button"
+            onClick={onSwitchToImport}
+            className="flex-1 py-2 px-3 rounded-xl text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 font-bold text-xs flex items-center justify-center gap-2 transition cursor-pointer"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
+            <span>Import Statement (PDF / Excel / CSV)</span>
+            <span className="text-[9px] bg-emerald-500 text-white font-extrabold px-1.5 py-0.2 rounded-full">
+              NEW
+            </span>
+          </button>
+        </div>
+      )}
+
       {/* Panel Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2.5">
@@ -278,25 +354,52 @@ export default function UploadForm({
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          {geminiApiKey ? (
-            <span 
-              title="Google Gemini Vision AI active (100% human-level accuracy)"
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/30 text-[11px] font-semibold text-indigo-600 dark:text-indigo-400"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-              Gemini AI Active
-            </span>
-          ) : (
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Mode Selector Toggle */}
+          <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-950 p-1 rounded-xl border border-slate-200 dark:border-slate-800 text-[11px]">
             <button
               type="button"
-              onClick={() => { setTempKey(geminiApiKey || ''); setShowKeyModal(!showKeyModal); }}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-[11px] font-semibold text-amber-600 dark:text-amber-400 transition cursor-pointer"
-              title="Click to enable 100% accurate AI extraction with free Gemini API key"
+              onClick={() => handleModeChange('fast')}
+              className={`px-2.5 py-1 rounded-lg font-semibold flex items-center gap-1.5 transition ${
+                ocrMode === 'fast'
+                  ? 'bg-emerald-600 text-white shadow-sm'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+              }`}
+              title="Lightning local OCR engine - completes in < 1 second"
             >
-              <Sparkles className="w-3.5 h-3.5 text-amber-500 animate-pulse" />
-              ⚡ 100% Accuracy AI Mode
+              <Zap className="w-3 h-3" />
+              <span>⚡ Fast (&lt;1s)</span>
             </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (!geminiApiKey) {
+                  setTempKey('');
+                  setShowKeyModal(true);
+                } else {
+                  handleModeChange('ai');
+                }
+              }}
+              className={`px-2.5 py-1 rounded-lg font-semibold flex items-center gap-1.5 transition ${
+                ocrMode === 'ai'
+                  ? 'bg-indigo-600 text-white shadow-sm'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+              }`}
+              title="Google Gemini AI Vision - deep OCR parsing (max 2.5s with fast-fallback)"
+            >
+              <Sparkles className="w-3 h-3 text-amber-300" />
+              <span>✨ AI Vision</span>
+            </button>
+          </div>
+
+          {extractDuration && (
+            <span 
+              title={`Extracted in ${extractDuration} seconds`}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-[11px] font-bold text-emerald-600 dark:text-emerald-400 font-mono animate-in fade-in"
+            >
+              <Zap className="w-3 h-3" />
+              {extractDuration}s
+            </span>
           )}
 
           {isAutoFilled && (
@@ -351,6 +454,14 @@ export default function UploadForm({
               Cancel
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Read-Only Mode Notice */}
+      {isReadOnly && (
+        <div className="p-3.5 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200 text-xs flex items-center gap-2.5 font-medium">
+          <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+          <span><b>Read-Only Mode:</b> Your account has view-only permissions. Uploading and submitting new transactions is restricted to users with write access.</span>
         </div>
       )}
 
@@ -669,13 +780,19 @@ export default function UploadForm({
         <div className="pt-2 flex items-center gap-2.5">
           <button
             type="submit"
-            disabled={isSubmitting}
-            className="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:opacity-50 text-white font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/25 transition"
+            disabled={isSubmitting || isReadOnly}
+            title={isReadOnly ? 'Read-only accounts cannot submit transactions' : 'Submit transaction to cloud ledger'}
+            className="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:opacity-50 text-white font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/25 transition cursor-pointer disabled:cursor-not-allowed"
           >
             {isSubmitting ? (
               <>
                 <RefreshCw className="w-4 h-4 animate-spin" />
                 Sending to Google Sheets...
+              </>
+            ) : isReadOnly ? (
+              <>
+                <AlertCircle className="w-4 h-4" />
+                Read-Only (Submission Disabled)
               </>
             ) : (
               <>

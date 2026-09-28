@@ -2,11 +2,20 @@ import React, { useState, useEffect } from 'react';
 import { 
   X, Copy, Check, ExternalLink, Database, 
   Key, Sparkles, AlertCircle, CheckCircle2, RefreshCw, 
-  ShieldCheck, User, Lock, Eye, EyeOff, Shield, Cloud
+  ShieldCheck, User, Lock, Eye, EyeOff, Shield, Cloud,
+  Users, UserPlus, Trash2, ShieldAlert, KeyRound, UserCheck, Edit3, Mail
 } from 'lucide-react';
 import { getWebhookUrl, setWebhookUrl, testWebhookConnection } from '../services/sheetsService';
 import { getGeminiApiKey, setGeminiApiKey } from '../services/ocrService';
-import { updateCredentials, getCurrentUser } from '../services/authService';
+import { 
+  updateCredentials, 
+  getCurrentUser, 
+  fetchAllUsers, 
+  createNewUser, 
+  deleteUserAccount,
+  validatePasswordStrength,
+  getRecoveryEmail
+} from '../services/authService';
 import { 
   getSupabaseConfig, 
   setSupabaseConfig, 
@@ -27,20 +36,32 @@ CREATE TABLE IF NOT EXISTS public.transactions (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2. Create Users Table for Multi-Device Login
+-- 2. Create Users Table for Multi-Device Login, Access Rights & Email OTP Recovery
 CREATE TABLE IF NOT EXISTS public.paylens_users (
   username TEXT PRIMARY KEY,
   password_hash TEXT NOT NULL,
   full_name TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'admin',
+  email TEXT DEFAULT 'sharmab7615@gmail.com',
+  phone TEXT DEFAULT '8521583071',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 3. Insert Default User (pradeep / admin)
-INSERT INTO public.paylens_users (username, password_hash, full_name)
+-- Ensure role, email and phone columns exist if table was created previously
+ALTER TABLE public.paylens_users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'admin';
+ALTER TABLE public.paylens_users ADD COLUMN IF NOT EXISTS email TEXT DEFAULT 'sharmab7615@gmail.com';
+ALTER TABLE public.paylens_users ADD COLUMN IF NOT EXISTS phone TEXT DEFAULT '8521583071';
+
+-- 3. Insert Default User (pradeep / admin with recovery email sharmab7615@gmail.com)
+INSERT INTO public.paylens_users (username, password_hash, full_name, role, email, phone)
 VALUES (
   'pradeep',
   '8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918',
-  'PRADEEP KUMAR SHARMA'
+  'PRADEEP KUMAR SHARMA',
+  'admin',
+  'sharmab7615@gmail.com',
+  '8521583071'
 )
 ON CONFLICT (username) DO NOTHING;
 
@@ -357,6 +378,7 @@ export default function BackendSetupModal({
   // Security Form States
   const [profileName, setProfileName] = useState('');
   const [profileUsername, setProfileUsername] = useState('');
+  const [recoveryEmail, setRecoveryEmailInput] = useState('');
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -365,18 +387,103 @@ export default function BackendSetupModal({
   const [securityStatus, setSecurityStatus] = useState(null);
   const [isUpdatingSecurity, setIsUpdatingSecurity] = useState(false);
 
+  // User Management & Access Rights States
+  const [securitySection, setSecuritySection] = useState('my_account'); // 'my_account' | 'users_access'
+  const [usersList, setUsersList] = useState([]);
+  const [isLoadingUsers, setIsLoadingUsers] = useState(false);
+  const [newUserName, setNewUserName] = useState('');
+  const [newUserLogin, setNewUserLogin] = useState('');
+  const [newUserPassword, setNewUserPassword] = useState('');
+  const [newUserRole, setNewUserRole] = useState('write'); // 'write' | 'admin' | 'read'
+  const [showNewUserPassword, setShowNewUserPassword] = useState(false);
+  const [isAddingUser, setIsAddingUser] = useState(false);
+  const [userAddStatus, setUserAddStatus] = useState(null);
+
+  const loadUsers = async () => {
+    setIsLoadingUsers(true);
+    try {
+      const list = await fetchAllUsers();
+      setUsersList(list || []);
+    } catch (e) {
+      console.warn('Error loading users:', e);
+    } finally {
+      setIsLoadingUsers(false);
+    }
+  };
+
   useEffect(() => {
     if (isOpen) {
       const u = currentUser || getCurrentUser();
-      setProfileName(u.fullName || 'PRADEEP KUMAR SHARMA');
-      setProfileUsername(u.username || 'pradeep');
+      setProfileName(u?.fullName || 'PRADEEP KUMAR SHARMA');
+      setProfileUsername(u?.username || 'pradeep');
+      setRecoveryEmailInput(u?.email || getRecoveryEmail());
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
       setSecurityStatus(null);
       setSupabaseTestStatus(null);
+      setUserAddStatus(null);
+      loadUsers();
     }
   }, [isOpen, currentUser]);
+
+  const handleCreateUser = async (e) => {
+    e.preventDefault();
+    setUserAddStatus(null);
+
+    if (!newUserLogin.trim() || !newUserName.trim() || !newUserPassword.trim()) {
+      setUserAddStatus({ type: 'error', text: 'Please fill in Full Name, Username, and Password.' });
+      return;
+    }
+
+    if (newUserPassword.trim().length < 4) {
+      setUserAddStatus({ type: 'error', text: 'Password must be at least 4 characters long.' });
+      return;
+    }
+
+    setIsAddingUser(true);
+    try {
+      const res = await createNewUser({
+        username: newUserLogin,
+        fullName: newUserName,
+        password: newUserPassword,
+        role: newUserRole
+      });
+
+      if (res.success) {
+        setUserAddStatus({ type: 'success', text: res.message });
+        setNewUserName('');
+        setNewUserLogin('');
+        setNewUserPassword('');
+        setNewUserRole('write');
+        await loadUsers();
+      } else {
+        setUserAddStatus({ type: 'error', text: res.message || 'Could not create user.' });
+      }
+    } catch (err) {
+      setUserAddStatus({ type: 'error', text: err.message || 'Error creating user.' });
+    } finally {
+      setIsAddingUser(false);
+    }
+  };
+
+  const handleDeleteUser = async (usernameToDelete, displayName) => {
+    if (!window.confirm(`Are you sure you want to revoke access and remove "${displayName}" (@${usernameToDelete})?`)) {
+      return;
+    }
+
+    try {
+      const res = await deleteUserAccount(usernameToDelete);
+      if (res.success) {
+        setUserAddStatus({ type: 'success', text: res.message });
+        await loadUsers();
+      } else {
+        setUserAddStatus({ type: 'error', text: res.message });
+      }
+    } catch (err) {
+      setUserAddStatus({ type: 'error', text: err.message || 'Error deleting user.' });
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -464,6 +571,15 @@ export default function BackendSetupModal({
       return;
     }
 
+    const cleanEmail = (recoveryEmail || '').trim().toLowerCase();
+    if (!cleanEmail || !cleanEmail.includes('@') || !cleanEmail.includes('.')) {
+      setSecurityStatus({
+        type: 'error',
+        text: 'Please enter a valid recovery email address for OTP login.'
+      });
+      return;
+    }
+
     if (newPassword && newPassword !== confirmPassword) {
       setSecurityStatus({
         type: 'error',
@@ -486,7 +602,8 @@ export default function BackendSetupModal({
         currentPassword,
         newUsername: profileUsername,
         newPassword: newPassword || undefined,
-        newFullName: profileName
+        newFullName: profileName,
+        email: cleanEmail
       });
 
       if (res.success) {
@@ -795,160 +912,560 @@ export default function BackendSetupModal({
               )}
             </div>
           ) : (
-            /* Tab 4: Security & Credentials */
-            <form onSubmit={handleSecurityUpdate} className="space-y-4">
-              <div className="p-4 rounded-2xl bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800/40 flex items-start gap-3">
-                <div className="p-2 rounded-xl bg-indigo-600/10 text-indigo-600 dark:text-indigo-400 shrink-0">
-                  <ShieldCheck className="w-5 h-5" />
-                </div>
-                <div>
-                  <h4 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider">
-                    Personal Vault Protection
-                  </h4>
-                  <p className="text-[11px] text-slate-600 dark:text-slate-400 mt-0.5">
-                    Update your full name, login username, or change password. All credentials are encrypted using SHA-256 Web Crypto and synced to Supabase.
-                  </p>
-                </div>
-              </div>
-
-              {securityStatus && (
-                <div className={`p-3.5 rounded-2xl text-xs flex items-center gap-2 font-medium ${
-                  securityStatus.type === 'success'
-                    ? 'bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300'
-                    : 'bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-300'
-                }`}>
-                  {securityStatus.type === 'success' ? (
-                    <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                  ) : (
-                    <AlertCircle className="w-4 h-4 shrink-0 text-rose-600 dark:text-rose-400" />
-                  )}
-                  <span>{securityStatus.text}</span>
-                </div>
-              )}
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
-                    Your Full Name (Welcome Display)
-                  </label>
-                  <div className="relative">
-                    <User className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
-                    <input
-                      type="text"
-                      required
-                      value={profileName}
-                      onChange={(e) => setProfileName(e.target.value)}
-                      placeholder="e.g. PRADEEP KUMAR SHARMA"
-                      className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl pl-10 pr-4 py-2.5 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-indigo-500 font-semibold"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
-                    Login Username
-                  </label>
-                  <div className="relative">
-                    <User className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
-                    <input
-                      type="text"
-                      required
-                      value={profileUsername}
-                      onChange={(e) => setProfileUsername(e.target.value)}
-                      placeholder="e.g. pradeep"
-                      className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl pl-10 pr-4 py-2.5 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-indigo-500 font-semibold"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <div className="pt-2 border-t border-slate-200 dark:border-slate-800 space-y-4">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
-                    Current Password <span className="text-rose-500">*</span>
-                  </label>
-                  <div className="relative">
-                    <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
-                    <input
-                      type={showCurrentPass ? 'text' : 'password'}
-                      required
-                      value={currentPassword}
-                      onChange={(e) => setCurrentPassword(e.target.value)}
-                      placeholder="Enter current password (default: admin)"
-                      className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl pl-10 pr-10 py-2.5 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-indigo-500 font-medium"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowCurrentPass(!showCurrentPass)}
-                      className="absolute right-3 top-2.5 p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
-                    >
-                      {showCurrentPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
-                      New Password (Optional)
-                    </label>
-                    <div className="relative">
-                      <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
-                      <input
-                        type={showNewPass ? 'text' : 'password'}
-                        value={newPassword}
-                        onChange={(e) => setNewPassword(e.target.value)}
-                        placeholder="Leave blank to keep current"
-                        className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl pl-10 pr-10 py-2.5 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-indigo-500 font-medium"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowNewPass(!showNewPass)}
-                        className="absolute right-3 top-2.5 p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
-                      >
-                        {showNewPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
-                      Confirm New Password
-                    </label>
-                    <div className="relative">
-                      <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
-                      <input
-                        type={showNewPass ? 'text' : 'password'}
-                        value={confirmPassword}
-                        onChange={(e) => setConfirmPassword(e.target.value)}
-                        placeholder="Re-enter new password"
-                        className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl pl-10 pr-4 py-2.5 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-indigo-500 font-medium"
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="pt-2 flex justify-end">
+            /* Tab 4: Security & Team Access */
+            <div className="space-y-5">
+              {/* Sub-tab Navigation */}
+              <div className="flex items-center gap-1.5 p-1 bg-slate-100 dark:bg-slate-950/80 rounded-2xl border border-slate-200 dark:border-slate-800">
                 <button
-                  type="submit"
-                  disabled={isUpdatingSecurity}
-                  className="px-6 py-2.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl transition shadow-lg shadow-indigo-600/30 flex items-center gap-2"
+                  type="button"
+                  onClick={() => setSecuritySection('my_account')}
+                  className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 ${
+                    securitySection === 'my_account'
+                      ? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-sm border border-slate-200/80 dark:border-slate-700'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
                 >
-                  {isUpdatingSecurity ? (
-                    <>
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                      Saving Changes...
-                    </>
-                  ) : (
-                    <>
-                      <ShieldCheck className="w-3.5 h-3.5" />
-                      Update Account Credentials
-                    </>
-                  )}
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  <span>My Profile &amp; Password</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setSecuritySection('users_access'); loadUsers(); }}
+                  className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 ${
+                    securitySection === 'users_access'
+                      ? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-sm border border-slate-200/80 dark:border-slate-700'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  <Users className="w-3.5 h-3.5" />
+                  <span>Team &amp; Access Rights</span>
+                  <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-indigo-50 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 font-mono font-bold">
+                    {usersList.length}
+                  </span>
                 </button>
               </div>
-            </form>
+
+              {securitySection === 'my_account' ? (
+                /* Sub-Section 1: My Profile & Password */
+                <form onSubmit={handleSecurityUpdate} className="space-y-4">
+                  <div className="p-4 rounded-2xl bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800/40 flex items-start gap-3">
+                    <div className="p-2 rounded-xl bg-indigo-600/10 text-indigo-600 dark:text-indigo-400 shrink-0">
+                      <ShieldCheck className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider">
+                        Personal Vault Protection
+                      </h4>
+                      <p className="text-[11px] text-slate-600 dark:text-slate-400 mt-0.5">
+                        Update your full name, login username, or change password. All changes are encrypted with SHA-256 and synced to Supabase.
+                      </p>
+                    </div>
+                  </div>
+
+                  {securityStatus && (
+                    <div className={`p-3.5 rounded-2xl text-xs flex items-center gap-2 font-medium ${
+                      securityStatus.type === 'success'
+                        ? 'bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300'
+                        : 'bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-300'
+                    }`}>
+                      {securityStatus.type === 'success' ? (
+                        <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                      ) : (
+                        <AlertCircle className="w-4 h-4 shrink-0 text-rose-600 dark:text-rose-400" />
+                      )}
+                      <span>{securityStatus.text}</span>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
+                        Your Full Name (Welcome Display)
+                      </label>
+                      <div className="relative">
+                        <User className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                        <input
+                          type="text"
+                          required
+                          value={profileName}
+                          onChange={(e) => setProfileName(e.target.value)}
+                          placeholder="e.g. PRADEEP KUMAR SHARMA"
+                          className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl pl-10 pr-4 py-2.5 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-indigo-500 font-semibold"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
+                        Login Username
+                      </label>
+                      <div className="relative">
+                        <User className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                        <input
+                          type="text"
+                          required
+                          value={profileUsername}
+                          onChange={(e) => setProfileUsername(e.target.value)}
+                          placeholder="e.g. pradeep"
+                          className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl pl-10 pr-4 py-2.5 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-indigo-500 font-semibold"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="sm:col-span-2">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                          <Mail className="w-3.5 h-3.5 text-indigo-500" />
+                          Registered Recovery Email (OTP Login)
+                        </label>
+                        <span className="text-[10px] text-emerald-500 font-mono font-medium flex items-center gap-1">
+                          <CheckCircle2 className="w-3 h-3" /> Active for Email OTP
+                        </span>
+                      </div>
+                      <div className="relative flex items-center">
+                        <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-3 pointer-events-none" />
+                        <input
+                          type="email"
+                          required
+                          value={recoveryEmail}
+                          onChange={(e) => setRecoveryEmailInput(e.target.value)}
+                          placeholder="sharmab7615@gmail.com"
+                          className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl pl-10 pr-4 py-2.5 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-indigo-500 font-mono font-semibold"
+                        />
+                      </div>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
+                        Agar aap password bhul jate hain, to sirf is email par OTP manga kar login kar sakte hain. Login ke baad aap ise yahan se kabhi bhi badal sakte hain.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-200 dark:border-slate-800 space-y-4">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
+                        Current Password <span className="text-rose-500">*</span>
+                      </label>
+                      <div className="relative">
+                        <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                        <input
+                          type={showCurrentPass ? 'text' : 'password'}
+                          required
+                          autoComplete="current-password"
+                          value={currentPassword}
+                          onChange={(e) => setCurrentPassword(e.target.value)}
+                          placeholder="Enter current password to authorize changes"
+                          className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl pl-10 pr-10 py-2.5 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-indigo-500 font-medium"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowCurrentPass(!showCurrentPass)}
+                          className="absolute right-3 top-2.5 p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                        >
+                          {showCurrentPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
+                          New Password (Optional)
+                        </label>
+                        <div className="relative">
+                          <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                          <input
+                            type={showNewPass ? 'text' : 'password'}
+                            autoComplete="new-password"
+                            value={newPassword}
+                            onChange={(e) => setNewPassword(e.target.value)}
+                            placeholder="Min 6 characters (e.g. MyPass@2026)"
+                            className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl pl-10 pr-10 py-2.5 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-indigo-500 font-medium"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowNewPass(!showNewPass)}
+                            className="absolute right-3 top-2.5 p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                          >
+                            {showNewPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                          </button>
+                        </div>
+
+                        {/* Real-time Password Strength & Breach-Risk Indicator */}
+                        {newPassword && (() => {
+                          const strength = validatePasswordStrength(newPassword);
+                          return (
+                            <div className={`mt-2 p-2.5 rounded-xl border text-[11px] space-y-1.5 transition ${
+                              strength.isBreachedRisk
+                                ? 'bg-rose-50 dark:bg-rose-950/40 border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-300'
+                                : strength.score >= 3
+                                ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300'
+                                : 'bg-amber-50 dark:bg-amber-950/40 border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-300'
+                            }`}>
+                              <div className="flex items-center justify-between font-bold">
+                                <span>Password Strength: {strength.label}</span>
+                                {strength.isBreachedRisk ? (
+                                  <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">⚠️ Breach Warning</span>
+                                ) : (
+                                  <span>{strength.score}/3</span>
+                                )}
+                              </div>
+                              <div className="w-full bg-slate-200 dark:bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                                <div className={`h-full transition-all duration-300 ${
+                                  strength.isBreachedRisk ? 'w-1/3 bg-rose-500' :
+                                  strength.score === 1 ? 'w-1/3 bg-amber-500' :
+                                  strength.score === 2 ? 'w-2/3 bg-sky-500' : 'w-full bg-emerald-500'
+                                }`} />
+                              </div>
+                              <p className="text-[10px] leading-tight text-slate-600 dark:text-slate-400">
+                                {strength.message}
+                              </p>
+                            </div>
+                          );
+                        })()}
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
+                          Confirm New Password
+                        </label>
+                        <div className="relative">
+                          <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                          <input
+                            type={showNewPass ? 'text' : 'password'}
+                            autoComplete="new-password"
+                            value={confirmPassword}
+                            onChange={(e) => setConfirmPassword(e.target.value)}
+                            placeholder="Re-enter new password"
+                            className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl pl-10 pr-4 py-2.5 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-indigo-500 font-medium"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Browser Breach Warning & Security Explanation Card */}
+                  <div className="p-3.5 rounded-2xl bg-indigo-50/70 dark:bg-indigo-950/40 border border-indigo-200/80 dark:border-indigo-800/60 text-[11px] text-indigo-950 dark:text-indigo-200 space-y-1.5">
+                    <div className="font-bold flex items-center gap-1.5 text-indigo-700 dark:text-indigo-400 text-xs">
+                      <ShieldCheck className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                      <span>Data Privacy &amp; Browser Breach Alerts Explained</span>
+                    </div>
+                    <p className="text-slate-600 dark:text-slate-400 leading-relaxed text-[11px]">
+                      Google Chrome displays <i>"Password found in a data breach"</i> whenever a very common password like <code className="bg-slate-200 dark:bg-slate-800 px-1 py-0.5 rounded text-rose-600 dark:text-rose-400 font-mono">admin</code>, <code className="bg-slate-200 dark:bg-slate-800 px-1 py-0.5 rounded text-rose-600 dark:text-rose-400 font-mono">123456</code>, or <code className="bg-slate-200 dark:bg-slate-800 px-1 py-0.5 rounded text-rose-600 dark:text-rose-400 font-mono">password</code> is entered. 
+                      <b> Aapka PayLens financial data, receipts, aur ledger bilkul 100% safe aur SHA-256 encrypted hain.</b> Chrome ke popup ko hamesha ke liye rokne ke liye ek unique aur strong password rakhein.
+                    </p>
+                  </div>
+
+                  <div className="pt-2 flex justify-end">
+                    <button
+                      type="submit"
+                      disabled={isUpdatingSecurity}
+                      className="px-6 py-2.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl transition shadow-lg shadow-indigo-600/30 flex items-center gap-2"
+                    >
+                      {isUpdatingSecurity ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          Saving Changes...
+                        </>
+                      ) : (
+                        <>
+                          <ShieldCheck className="w-3.5 h-3.5" />
+                          Update Account Credentials
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                /* Sub-Section 2: Team & Access Rights (Right Access / Users) */
+                <div className="space-y-6">
+                  {/* Banner */}
+                  <div className="p-4 rounded-2xl bg-gradient-to-r from-emerald-500/10 via-indigo-500/5 to-purple-500/10 border border-emerald-500/20 text-xs text-slate-800 dark:text-slate-200 space-y-1.5">
+                    <div className="font-bold flex items-center gap-2 text-slate-900 dark:text-white text-sm">
+                      <UserPlus className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                      Grant User Access / Kisi Aur Ko Access Dena
+                    </div>
+                    <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
+                      Yaha se aap kisi bhi team member ya staff ko <b>Write Access (Right access)</b> ya Read-Only access de sakte hain. Naya user create hone ke baad wo apne alag username aur password se kisi bhi mobile ya computer se login kar sakta hai.
+                    </p>
+                  </div>
+
+                  {userAddStatus && (
+                    <div className={`p-3.5 rounded-2xl text-xs flex items-center gap-2 font-medium ${
+                      userAddStatus.type === 'success'
+                        ? 'bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300'
+                        : 'bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-300'
+                    }`}>
+                      {userAddStatus.type === 'success' ? (
+                        <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                      ) : (
+                        <AlertCircle className="w-4 h-4 shrink-0 text-rose-600 dark:text-rose-400" />
+                      )}
+                      <span>{userAddStatus.text}</span>
+                    </div>
+                  )}
+
+                  {/* Create New User Form */}
+                  <form onSubmit={handleCreateUser} className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-950/50 border border-slate-200 dark:border-slate-800/80 space-y-4">
+                    <h5 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-2">
+                      <UserPlus className="w-4 h-4 text-indigo-500" />
+                      Create New User Account
+                    </h5>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1">
+                          Full Name *
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={newUserName}
+                          onChange={(e) => setNewUserName(e.target.value)}
+                          placeholder="e.g. Rahul Sharma"
+                          className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-indigo-500 font-medium"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1">
+                          Login Username *
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={newUserLogin}
+                          onChange={(e) => setNewUserLogin(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ''))}
+                          placeholder="e.g. rahul"
+                          className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-indigo-500 font-medium font-mono"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1">
+                          Password *
+                        </label>
+                        <div className="relative">
+                          <input
+                            type={showNewUserPassword ? 'text' : 'password'}
+                            required
+                            autoComplete="new-password"
+                            value={newUserPassword}
+                            onChange={(e) => setNewUserPassword(e.target.value)}
+                            placeholder="Min 6 characters (e.g. Pass@123)"
+                            className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-xl pl-3 pr-8 py-2 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:outline-none focus:border-indigo-500 font-medium"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowNewUserPassword(!showNewUserPassword)}
+                            className="absolute right-2.5 top-2 p-0.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                          >
+                            {showNewUserPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                          </button>
+                        </div>
+
+                        {/* Password Strength for new user */}
+                        {newUserPassword && (() => {
+                          const strength = validatePasswordStrength(newUserPassword);
+                          return (
+                            <div className="mt-1 text-[10px] flex items-center justify-between">
+                              <span className={strength.isBreachedRisk ? 'text-rose-600 dark:text-rose-400 font-bold' : strength.score >= 3 ? 'text-emerald-600 dark:text-emerald-400 font-bold' : 'text-slate-500'}>
+                                {strength.isBreachedRisk ? '⚠️ Breached Password' : `Strength: ${strength.label}`}
+                              </span>
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    </div>
+
+                    {/* Access Role Selection Cards */}
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-2">
+                        Select Access Permission / Rights
+                      </label>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                        {/* Write Access (Recommended) */}
+                        <div
+                          onClick={() => setNewUserRole('write')}
+                          className={`p-3 rounded-xl border cursor-pointer transition flex flex-col justify-between ${
+                            newUserRole === 'write'
+                              ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-500 ring-2 ring-emerald-500/20'
+                              : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:border-slate-400'
+                          }`}
+                        >
+                          <div>
+                            <div className="flex items-center justify-between">
+                              <span className="font-bold text-xs text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5">
+                                ✍️ Write Access
+                              </span>
+                              <span className="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300">
+                                Recommended
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-600 dark:text-slate-400 mt-1 leading-snug">
+                              Can upload screenshots, run AI extraction, and submit transactions. Cannot delete records or manage users.
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Admin Access */}
+                        <div
+                          onClick={() => setNewUserRole('admin')}
+                          className={`p-3 rounded-xl border cursor-pointer transition flex flex-col justify-between ${
+                            newUserRole === 'admin'
+                              ? 'bg-purple-50 dark:bg-purple-950/40 border-purple-500 ring-2 ring-purple-500/20'
+                              : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:border-slate-400'
+                          }`}
+                        >
+                          <div>
+                            <div className="flex items-center justify-between">
+                              <span className="font-bold text-xs text-purple-700 dark:text-purple-400 flex items-center gap-1.5">
+                                🛡️ Admin Access
+                              </span>
+                              <span className="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-purple-100 dark:bg-purple-900/60 text-purple-700 dark:text-purple-300">
+                                Full Control
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-600 dark:text-slate-400 mt-1 leading-snug">
+                              Full access to manage transactions, delete records, configure database, and add/remove users.
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Read Only Access */}
+                        <div
+                          onClick={() => setNewUserRole('read')}
+                          className={`p-3 rounded-xl border cursor-pointer transition flex flex-col justify-between ${
+                            newUserRole === 'read'
+                              ? 'bg-blue-50 dark:bg-blue-950/40 border-blue-500 ring-2 ring-blue-500/20'
+                              : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:border-slate-400'
+                          }`}
+                        >
+                          <div>
+                            <div className="flex items-center justify-between">
+                              <span className="font-bold text-xs text-blue-700 dark:text-blue-400 flex items-center gap-1.5">
+                                👁️ Read-Only
+                              </span>
+                              <span className="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300">
+                                Viewer
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-600 dark:text-slate-400 mt-1 leading-snug">
+                              Can view transaction ledger, search, filter, and export CSV. Cannot upload or delete.
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end pt-1">
+                      <button
+                        type="submit"
+                        disabled={isAddingUser}
+                        className="px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl transition shadow-md shadow-emerald-600/20 flex items-center gap-2"
+                      >
+                        {isAddingUser ? (
+                          <>
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                            Creating User...
+                          </>
+                        ) : (
+                          <>
+                            <UserPlus className="w-3.5 h-3.5" />
+                            Create User &amp; Grant Access
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </form>
+
+                  {/* Active Users Table / List */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h5 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-2">
+                        <Users className="w-4 h-4 text-indigo-500" />
+                        Active Team Accounts ({usersList.length})
+                      </h5>
+                      <button
+                        type="button"
+                        onClick={loadUsers}
+                        disabled={isLoadingUsers}
+                        className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1 font-semibold"
+                      >
+                        <RefreshCw className={`w-3 h-3 ${isLoadingUsers ? 'animate-spin' : ''}`} />
+                        Refresh List
+                      </button>
+                    </div>
+
+                    <div className="border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden bg-white dark:bg-slate-900/40">
+                      {usersList.length === 0 ? (
+                        <div className="p-6 text-center text-xs text-slate-500 dark:text-slate-400">
+                          {isLoadingUsers ? 'Loading accounts from cloud...' : 'No additional users found.'}
+                        </div>
+                      ) : (
+                        <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                          {usersList.map((u) => {
+                            const isMe = (currentUser?.username || '').toLowerCase() === (u.username || '').toLowerCase();
+                            const role = u.role || 'admin';
+                            return (
+                              <div key={u.username} className="p-3.5 flex items-center justify-between gap-3 hover:bg-slate-50/60 dark:hover:bg-slate-800/30 transition">
+                                <div className="flex items-center gap-3">
+                                  <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-xs font-black text-white shrink-0 shadow-sm ${
+                                    role === 'admin'
+                                      ? 'bg-gradient-to-tr from-purple-600 to-indigo-600'
+                                      : role === 'write'
+                                      ? 'bg-gradient-to-tr from-emerald-600 to-teal-600'
+                                      : 'bg-gradient-to-tr from-slate-600 to-slate-500'
+                                  }`}>
+                                    {(u.fullName || u.username).charAt(0).toUpperCase()}
+                                  </div>
+                                  <div>
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-bold text-xs text-slate-900 dark:text-white">
+                                        {u.fullName || u.username}
+                                      </span>
+                                      {isMe && (
+                                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800">
+                                          You
+                                        </span>
+                                      )}
+                                    </div>
+                                    <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
+                                      @{u.username}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center gap-3">
+                                  <span className={`px-2.5 py-1 rounded-full text-[11px] font-semibold flex items-center gap-1.5 border ${
+                                    role === 'admin'
+                                      ? 'bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800'
+                                      : role === 'write'
+                                      ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                                      : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700'
+                                  }`}>
+                                    {role === 'admin' ? '🛡️ Admin' : role === 'write' ? '✍️ Write Access' : '👁️ Read-Only'}
+                                  </span>
+
+                                  {!isMe && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteUser(u.username, u.fullName || u.username)}
+                                      title="Revoke access"
+                                      className="p-1.5 text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-lg transition"
+                                    >
+                                      <Trash2 className="w-4 h-4" />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
         </div>
 

@@ -209,6 +209,51 @@ export const insertSupabaseTransaction = async (tx) => {
 };
 
 /**
+ * Insert batch of transactions into Supabase
+ */
+export const insertBatchSupabaseTransactions = async (transactions = []) => {
+  const supabase = getSupabaseClient();
+  if (!supabase) return { success: false, message: 'Supabase not configured' };
+  if (!transactions.length) return { success: true, count: 0, records: [] };
+
+  try {
+    const rows = transactions.map(tx => ({
+      app_name: tx.appName || 'Unknown',
+      type: tx.type || 'Sent',
+      sender: tx.from || '',
+      receiver: tx.to || '',
+      amount: tx.amount || '₹0',
+      date_time: tx.dateTime || '',
+      transaction_id: tx.transactionId || 'N/A',
+      screenshot_url: null,
+      created_at: tx.timestamp || new Date().toISOString()
+    }));
+
+    const { data, error } = await supabase
+      .from('transactions')
+      .insert(rows)
+      .select();
+
+    if (error) {
+      return { success: false, message: error.message };
+    }
+
+    return {
+      success: true,
+      records: (data || []).map((d, i) => ({
+        ...transactions[i],
+        id: d.id,
+        synced: true
+      })),
+      count: data?.length || 0,
+      message: `Successfully saved ${data?.length || 0} transactions to Supabase!`
+    };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+};
+
+/**
  * Delete a transaction from Supabase
  */
 export const deleteSupabaseTransaction = async (id, transactionId) => {
@@ -307,18 +352,26 @@ export const fetchSupabaseAuth = async (username = null) => {
   try {
     let query = supabase.from('paylens_users').select('*');
     if (username) {
-      query = query.ilike('username', username.trim());
+      query = query.ilike('username', username.trim().toLowerCase());
     }
-    const { data, error } = await query.limit(1).maybeSingle();
+    // Prioritize newest updated record to prevent stale duplicate rows
+    const { data, error } = await query
+      .order('updated_at', { ascending: false, nullsFirst: false })
+      .limit(1)
+      .maybeSingle();
 
     if (error || !data) return { success: false };
 
     return {
       success: true,
       user: {
-        username: data.username,
+        username: data.username.toLowerCase(),
         passwordHash: data.password_hash,
-        fullName: data.full_name
+        fullName: data.full_name,
+        role: data.role || 'admin',
+        email: data.email || 'sharmab7615@gmail.com',
+        phone: data.phone || '8521583071',
+        updatedAt: data.updated_at
       }
     };
   } catch (e) {
@@ -326,29 +379,165 @@ export const fetchSupabaseAuth = async (username = null) => {
   }
 };
 
+/**
+ * Fetch all registered users from Supabase
+ */
+export const fetchSupabaseUsers = async () => {
+  const supabase = getSupabaseClient();
+  if (!supabase) return { success: false, users: [] };
+
+  try {
+    const { data, error } = await supabase
+      .from('paylens_users')
+      .select('*')
+      .order('updated_at', { ascending: false });
+
+    if (error) {
+      console.warn('Failed to fetch Supabase users:', error.message);
+      return { success: false, users: [], error: error.message };
+    }
+
+    const users = (data || []).map(u => ({
+      username: u.username.toLowerCase(),
+      fullName: u.full_name,
+      role: u.role || 'admin',
+      passwordHash: u.password_hash,
+      updatedAt: u.updated_at
+    }));
+
+    return { success: true, users };
+  } catch (e) {
+    return { success: false, users: [], error: e.message };
+  }
+};
+
+/**
+ * Insert a newly created user into Supabase
+ */
+export const insertSupabaseUser = async (user) => {
+  const supabase = getSupabaseClient();
+  if (!supabase) return { success: false, message: 'Supabase client not initialized' };
+
+  const cleanUsername = user.username.trim().toLowerCase();
+
+  try {
+    // Clean up any conflicting records with case-insensitive match first
+    await supabase
+      .from('paylens_users')
+      .delete()
+      .ilike('username', cleanUsername);
+
+    // Attempt insert with role
+    const rowWithRole = {
+      username: cleanUsername,
+      password_hash: user.passwordHash,
+      full_name: user.fullName.trim(),
+      role: user.role || 'write',
+      updated_at: new Date().toISOString()
+    };
+
+    let { error } = await supabase
+      .from('paylens_users')
+      .insert([rowWithRole]);
+
+    // If role column doesn't exist yet (42703), retry without role column
+    if (error && (error.code === '42703' || error.message?.includes('role'))) {
+      const rowWithoutRole = {
+        username: cleanUsername,
+        password_hash: user.passwordHash,
+        full_name: user.fullName.trim(),
+        updated_at: new Date().toISOString()
+      };
+      const retry = await supabase.from('paylens_users').insert([rowWithoutRole]);
+      error = retry.error;
+    }
+
+    if (error) {
+      return { success: false, message: error.message };
+    }
+
+    return {
+      success: true,
+      user: {
+        username: cleanUsername,
+        fullName: user.fullName.trim(),
+        role: user.role || 'write',
+        passwordHash: user.passwordHash
+      }
+    };
+  } catch (e) {
+    return { success: false, message: e.message };
+  }
+};
+
+/**
+ * Delete a user from Supabase
+ */
+export const deleteSupabaseUser = async (username) => {
+  const supabase = getSupabaseClient();
+  if (!supabase || !username) return { success: false };
+
+  try {
+    const { error } = await supabase
+      .from('paylens_users')
+      .delete()
+      .ilike('username', username.trim().toLowerCase());
+
+    return { success: !error, error: error?.message };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+};
+
 export const updateSupabaseAuth = async (user, oldUsername = null) => {
   const supabase = getSupabaseClient();
   if (!supabase) return { success: false };
 
+  const newUsername = user.username.trim().toLowerCase();
+
   try {
-    // If username changed, delete the old username entry
-    if (oldUsername && oldUsername.trim().toLowerCase() !== user.username.trim().toLowerCase()) {
+    // If username changed, delete the old username entry completely
+    if (oldUsername && oldUsername.trim().toLowerCase() !== newUsername) {
       await supabase
         .from('paylens_users')
         .delete()
-        .ilike('username', oldUsername.trim());
+        .ilike('username', oldUsername.trim().toLowerCase());
     }
 
-    const { error } = await supabase
+    // Also delete any existing row matching newUsername to prevent casing duplicate primary keys
+    await supabase
       .from('paylens_users')
-      .upsert([
-        {
-          username: user.username.trim(),
-          password_hash: user.passwordHash,
-          full_name: user.fullName,
-          updated_at: new Date().toISOString()
-        }
-      ], { onConflict: 'username' });
+      .delete()
+      .ilike('username', newUsername);
+
+    const row = {
+      username: newUsername,
+      password_hash: user.passwordHash,
+      full_name: user.fullName.trim(),
+      role: user.role || 'admin',
+      email: user.email || 'sharmab7615@gmail.com',
+      phone: user.phone || '8521583071',
+      updated_at: new Date().toISOString()
+    };
+
+    let { error } = await supabase
+      .from('paylens_users')
+      .insert([row]);
+
+    // Fallback if role, phone or email column does not exist yet
+    if (error && (error.code === '42703' || error.message?.includes('role') || error.message?.includes('phone') || error.message?.includes('email'))) {
+      const fallbackRow = {
+        username: newUsername,
+        password_hash: user.passwordHash,
+        full_name: user.fullName.trim(),
+        updated_at: new Date().toISOString()
+      };
+      if (!error.message?.includes('role')) {
+        fallbackRow.role = user.role || 'admin';
+      }
+      const retry = await supabase.from('paylens_users').insert([fallbackRow]);
+      error = retry.error;
+    }
 
     if (error) {
       console.warn('Supabase auth update error:', error.message);
