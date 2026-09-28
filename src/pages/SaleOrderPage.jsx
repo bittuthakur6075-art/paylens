@@ -5,7 +5,7 @@ import {
   Printer, ClipboardList, Calculator, Receipt, User, 
   Building2, Percent, CheckSquare, Save, Sparkles,
   RotateCcw, Landmark, Truck, Calendar, Hash, FileCheck2,
-  ChevronDown, ChevronUp
+  ChevronDown, ChevronUp, Copy
 } from 'lucide-react';
 
 // Format Indian Currency
@@ -47,25 +47,29 @@ const numberToWords = (num) => {
   return result + ' Only';
 };
 
-// Default Seller / Company Info matching reference document
-const defaultSeller = {
-  firmName: "Reworks",
-  address: "40/3 ITI Colony Sandwa, Naini Industrial Area, Allahabad, Uttar Pradesh, 211010",
-  mobile: "63790 91946",
-  gstin: "09DEKPS4410D1ZI",
-  state: "Uttar Pradesh",
-  stateCode: "09"
-};
+// Pre-configured Company Profiles (User can customize or save as default)
+const defaultCompanies = [
+  {
+    id: "aman",
+    firmName: "AMAN ENTERPRISES",
+    address: "10831, GALI PHOOL WALI, Karol Bagh, Central Delhi, Delhi, 110005",
+    mobile: "98100 12345",
+    gstin: "07BFMPM7025K1Z2",
+    state: "Delhi",
+    stateCode: "07",
+    bank: {
+      accountName: "Aman Enterprises",
+      accountNo: "236711100002209",
+      bankName: "UNION BANK OF INDIA",
+      branch: "BRANCH RAJENDRA NAGAR, NEW DELHI-110060",
+      ifscCode: "UBIN0823678",
+      swiftCode: "UBININBBNCC"
+    }
+  }
+];
 
-// Default Bank Details from Reference PDF
-const defaultBankDetails = {
-  accountName: "Aman Enterprises",
-  accountNo: "236711100002209",
-  bankName: "UNION BANK OF INDIA",
-  branch: "BRANCH RAJENDRA NAGAR, NEW DELHI-110060",
-  ifscCode: "UBIN0823678",
-  swiftCode: "UBININBBNCC"
-};
+const defaultSeller = defaultCompanies[0];
+const defaultBankDetails = defaultCompanies[0].bank;
 
 const defaultBuyer = {
   partyName: "Reworks",
@@ -97,10 +101,50 @@ export default function SaleOrderPage() {
   const [termsOfDelivery, setTermsOfDelivery] = useState("Goods once sold will not be taken back.");
   const [orderNote, setOrderNote] = useState("Note : - 50% Advance and 50% Before Dispatch");
   
-  // Parties
-  const [sellerInfo, setSellerInfo] = useState(defaultSeller);
+  // Saved Seller Companies List
+  const [savedCompanies, setSavedCompanies] = useState(() => {
+    try {
+      const stored = localStorage.getItem('paylens_companies_list');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const clean = parsed.filter(c => c.firmName && c.firmName.toLowerCase() !== 'reworks');
+          if (clean.length > 0) return clean;
+        }
+      }
+    } catch (e) {}
+    return defaultCompanies;
+  });
+
+  // Parties & Main Company Selection
+  const [sellerInfo, setSellerInfo] = useState(() => {
+    try {
+      const saved = localStorage.getItem('paylens_main_company');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.firmName && parsed.firmName.toLowerCase() !== 'reworks') {
+          return parsed;
+        }
+      }
+    } catch (e) {}
+    return defaultCompanies[0];
+  });
   const [buyerInfo, setBuyerInfo] = useState(defaultBuyer);
-  const [bankDetails, setBankDetails] = useState(defaultBankDetails);
+  const [consigneeInfo, setConsigneeInfo] = useState(defaultBuyer);
+  const [sameAsBuyer, setSameAsBuyer] = useState(true);
+  const [bankDetails, setBankDetails] = useState(() => {
+    try {
+      const saved = localStorage.getItem('paylens_main_company');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.bank && parsed.firmName && parsed.firmName.toLowerCase() !== 'reworks') {
+          return parsed.bank;
+        }
+      }
+    } catch (e) {}
+    return defaultCompanies[0].bank;
+  });
+  const [companySavedToast, setCompanySavedToast] = useState(false);
 
   // Advanced accordion state
   const [showAdvancedVoucher, setShowAdvancedVoucher] = useState(true);
@@ -205,10 +249,108 @@ export default function SaleOrderPage() {
     setDispatchDocNo("");
     setDeliveryDate("");
     setBuyerInfo(defaultBuyer);
+    setConsigneeInfo(defaultBuyer);
+    setSameAsBuyer(true);
     setItems([{ id: Date.now(), name: "", hsn: "", dueOn: "", qty: 1, unit: "pcs", rate: 0, amount: 0 }]);
   };
 
-  // Load exact reference sample from Reworks 9 april.pdf
+  // Save / Add Company to list and set as default in localStorage
+  const handleSaveMainCompany = () => {
+    try {
+      const name = (sellerInfo.firmName || "").trim();
+      if (!name) {
+        alert("Please enter a Company / Firm Name first.");
+        return;
+      }
+      const toSave = { ...sellerInfo, bank: bankDetails };
+      localStorage.setItem('paylens_main_company', JSON.stringify(toSave));
+
+      // Update or append to savedCompanies list
+      setSavedCompanies(prev => {
+        const idx = prev.findIndex(c => c.firmName?.toLowerCase() === name.toLowerCase());
+        let updated;
+        if (idx >= 0) {
+          updated = [...prev];
+          updated[idx] = { ...updated[idx], ...toSave };
+        } else {
+          updated = [...prev, { id: Date.now().toString(), ...toSave }];
+        }
+        localStorage.setItem('paylens_companies_list', JSON.stringify(updated));
+        return updated;
+      });
+
+      setCompanySavedToast(true);
+      setTimeout(() => setCompanySavedToast(false), 3000);
+    } catch (e) {
+      alert("Failed to save company profile.");
+    }
+  };
+
+  // Clear inputs to add a fresh new company
+  const handleAddNewCompany = () => {
+    setSellerInfo({
+      firmName: "",
+      address: "",
+      mobile: "",
+      state: "",
+      stateCode: "",
+      gstin: ""
+    });
+    setBankDetails({
+      accountName: "",
+      accountNo: "",
+      bankName: "",
+      branch: "",
+      ifscCode: "",
+      swiftCode: ""
+    });
+  };
+
+  // Delete a company preset
+  const handleDeleteCompany = (id, firmName, e) => {
+    e.stopPropagation();
+    if (savedCompanies.length <= 1) {
+      alert("At least one company must remain in the list.");
+      return;
+    }
+    if (window.confirm(`Are you sure you want to remove "${firmName}" from company presets?`)) {
+      const updated = savedCompanies.filter(c => c.id !== id);
+      setSavedCompanies(updated);
+      localStorage.setItem('paylens_companies_list', JSON.stringify(updated));
+      if (sellerInfo.firmName?.toLowerCase() === firmName?.toLowerCase()) {
+        handleSelectCompanyPreset(updated[0]);
+      }
+    }
+  };
+
+  // Switch Main Company profile
+  const handleSelectCompanyPreset = (company) => {
+    setSellerInfo({
+      firmName: company.firmName || "",
+      address: company.address || "",
+      mobile: company.mobile || "",
+      gstin: company.gstin || "",
+      state: company.state || "",
+      stateCode: company.stateCode || ""
+    });
+    if (company.bank) {
+      setBankDetails(company.bank);
+    }
+  };
+
+  // Copy Buyer (Bill to) to Consignee (Ship to)
+  const handleCopyBuyerToConsignee = () => {
+    setConsigneeInfo({
+      partyName: buyerInfo.partyName || "",
+      address: buyerInfo.address || "",
+      mobile: buyerInfo.mobile || "",
+      state: buyerInfo.state || "",
+      stateCode: buyerInfo.stateCode || "",
+      gstin: buyerInfo.gstin || ""
+    });
+  };
+
+  // Load exact reference sample from reference document
   const loadReferenceSample = () => {
     setOrderNo("231");
     setDate("09-April-26");
@@ -225,16 +367,18 @@ export default function SaleOrderPage() {
     setTermsOfDelivery("Goods once sold will not be taken back.");
     setOrderNote("Note : - 50% Advance and 50% Before Dispatch");
     
+    // Main Company that bills / cuts the bill
     setSellerInfo({
-      firmName: "Reworks",
-      address: "40/3 ITI Colony Sandwa, Naini Industrial Area, Allahabad, Uttar Pradesh, 211010",
-      mobile: "63790 91946",
-      state: "Uttar Pradesh",
-      stateCode: "09",
-      gstin: "09DEKPS4410D1ZI"
+      firmName: "AMAN ENTERPRISES",
+      address: "10831, GALI PHOOL WALI, Karol Bagh, Central Delhi, Delhi, 110005",
+      mobile: "98100 12345",
+      state: "Delhi",
+      stateCode: "07",
+      gstin: "07BFMPM7025K1Z2"
     });
     
-    setBuyerInfo({
+    // Consignee (Ship to)
+    setConsigneeInfo({
       partyName: "Reworks",
       address: "40/3 ITI Colony Sandwa, Naini Industrial Area, Allahabad, Uttar Pradesh, 211010",
       mobile: "63790 91946",
@@ -243,7 +387,25 @@ export default function SaleOrderPage() {
       gstin: "09DEKPS4410D1ZI"
     });
 
-    setBankDetails(defaultBankDetails);
+    // Buyer (Bill to)
+    setBuyerInfo({
+      partyName: "Reworks",
+      address: "40/3 ITI Colony Sandwa, Naini Industrial Area, Allahabad, Uttar Pradesh, 211010",
+      mobile: "63790 91946",
+      state: "Uttar Pradesh",
+      stateCode: "09",
+      gstin: "09DEKPS4410D1ZI"
+    });
+    setSameAsBuyer(true);
+
+    setBankDetails({
+      accountName: "Aman Enterprises",
+      accountNo: "236711100002209",
+      bankName: "UNION BANK OF INDIA",
+      branch: "BRANCH RAJENDRA NAGAR, NEW DELHI-110060",
+      ifscCode: "UBIN0823678",
+      swiftCode: "UBININBBNCC"
+    });
 
     setItems([
       {
@@ -286,6 +448,7 @@ export default function SaleOrderPage() {
       termsOfDelivery,
       orderNote,
       seller: sellerInfo,
+      consignee: sameAsBuyer ? buyerInfo : consigneeInfo,
       buyer: buyerInfo,
       bank: bankDetails,
       items,
@@ -325,6 +488,8 @@ export default function SaleOrderPage() {
     setOrderNote(order.orderNote || "Note : - 50% Advance and 50% Before Dispatch");
     setSellerInfo(order.seller || defaultSeller);
     setBuyerInfo(order.buyer || defaultBuyer);
+    setConsigneeInfo(order.consignee || order.buyer || defaultBuyer);
+    setSameAsBuyer(!order.consignee || JSON.stringify(order.consignee) === JSON.stringify(order.buyer));
     setBankDetails(order.bank || defaultBankDetails);
     setItems(order.items?.length ? order.items : [{ id: 1, name: "", hsn: "", dueOn: "", qty: 1, unit: "pcs", rate: 0, amount: 0 }]);
     setTaxType(order.taxType || "igst");
@@ -362,6 +527,7 @@ export default function SaleOrderPage() {
       termsOfDelivery,
       orderNote,
       seller: sellerInfo,
+      consignee: sameAsBuyer ? buyerInfo : consigneeInfo,
       buyer: buyerInfo,
       bank: bankDetails,
       items,
@@ -383,11 +549,11 @@ export default function SaleOrderPage() {
     const top = 18;
     const bottom = 280;
 
-    // Document Title: "Sale Order" at center top
+    // Document Title: "SALES ORDER" at center top
     doc.setFont("helvetica", "bold");
     doc.setFontSize(11);
     doc.setTextColor(0, 0, 0);
-    doc.text("Sale Order", pageWidth / 2, 14, { align: "center" });
+    doc.text("SALES ORDER", pageWidth / 2, 14, { align: "center" });
 
     // Main Outer Box Border
     doc.setDrawColor(0, 0, 0);
@@ -395,162 +561,259 @@ export default function SaleOrderPage() {
     doc.rect(left, top, width, bottom - top);
 
     // -------------------------------------------------------------
-    // SECTION 1: SELLER & VOUCHER DETAILS (Y: 18 -> 95)
+    // SECTION 1: SELLER, CONSIGNEE, BUYER & VOUCHER (Y: 18 -> 95)
     // -------------------------------------------------------------
     const midX = 105;
-    doc.line(midX, top, midX, 95); // Vertical split between Seller/Buyer and Voucher details
+    doc.line(midX, top, midX, 95); // Vertical split between Left Details and Voucher details
 
-    // LEFT COLUMN: Seller Details (Top part: 18 -> 55)
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(10);
-    doc.text(data.seller.firmName, left + 3, top + 6);
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(8);
-    const sellerAddr = doc.splitTextToSize(data.seller.address, midX - left - 6);
-    doc.text(sellerAddr, left + 3, top + 11);
-
-    let curSellerY = top + 11 + (sellerAddr.length * 3.8);
-    doc.text(`Mob. ${data.seller.mobile}`, left + 3, curSellerY + 3);
-    doc.text(`STATE NAME : ${data.seller.state} , Code : ${data.seller.stateCode}`, left + 3, curSellerY + 7);
-    doc.setFont("helvetica", "bold");
-    doc.text(`GST NO. : ${data.seller.gstin}`, left + 3, curSellerY + 11);
-
-    // Horizontal divider between Seller and Buyer at Y = 55
-    doc.line(left, 55, midX, 55);
-
-    // LEFT COLUMN: Buyer / Consignee Details (Bottom part: 55 -> 95)
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7.5);
-    doc.text("Buyer (Bill to)", left + 3, 59);
-
+    // BOX 1 (Top-Left): Main Billing Company / Seller (18 -> 38)
     doc.setFont("helvetica", "bold");
     doc.setFontSize(9.5);
-    doc.text(data.buyer.partyName || "CASH SALE", left + 3, 64);
+    doc.setTextColor(0, 0, 0);
+    doc.text(data.seller.firmName || "COMPANY NAME", left + 3, top + 4.5);
 
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(8);
-    const buyerAddr = doc.splitTextToSize(data.buyer.address || "Local", midX - left - 6);
-    doc.text(buyerAddr, left + 3, 69);
+    doc.setFontSize(7.5);
+    const sellerAddr = doc.splitTextToSize(data.seller.address || "", midX - left - 6);
+    doc.text(sellerAddr, left + 3, top + 8.5);
 
-    let curBuyerY = 69 + (buyerAddr.length * 3.8);
-    if (data.buyer.mobile) {
-      doc.text(`Mob. ${data.buyer.mobile}`, left + 3, curBuyerY + 2.5);
-      curBuyerY += 3.5;
+    let curSellerY = top + 8.5 + (sellerAddr.length * 3.4);
+    if (data.seller.mobile) {
+      doc.text(`Mob. ${data.seller.mobile}`, left + 3, curSellerY);
+      curSellerY += 3.4;
     }
-    doc.text(`STATE NAME : ${data.buyer.state || data.seller.state} , Code : ${data.buyer.stateCode || data.seller.stateCode}`, left + 3, curBuyerY + 2.5);
-    doc.setFont("helvetica", "bold");
-    doc.text(`GST NO. : ${data.buyer.gstin || "N/A"}`, left + 3, curBuyerY + 6.5);
+    doc.text(`GSTIN/UIN: ${data.seller.gstin || "N/A"}`, left + 3, curSellerY);
+    curSellerY += 3.4;
+    doc.text(`State Name : ${data.seller.state || "Delhi"} , Code : ${data.seller.stateCode || "07"}`, left + 3, curSellerY);
 
+    // Divider line 1 at Y = 38
+    doc.line(left, 38, midX, 38);
+
+    // BOX 2 (Mid-Left): Consignee (Ship to) (38 -> 66.5)
+    const cTop = 38;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7);
+    doc.setTextColor(80, 80, 80);
+    doc.text("Consignee (Ship to)", left + 3, cTop + 3.5);
+
+    const consignee = data.consignee || data.buyer;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8.5);
+    doc.setTextColor(0, 0, 0);
+    doc.text(consignee.partyName || "CASH SALE", left + 3, cTop + 7.5);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7.5);
+    const consigneeAddr = doc.splitTextToSize(consignee.address || "Local", midX - left - 6);
+    doc.text(consigneeAddr, left + 3, cTop + 11.2);
+
+    let curConsigneeY = cTop + 11.2 + (consigneeAddr.length * 3.3);
+    if (consignee.mobile) {
+      doc.text(`Mob. ${consignee.mobile}`, left + 3, curConsigneeY);
+      curConsigneeY += 3.3;
+    }
+    doc.text(`STATE NAME : ${consignee.state || data.seller.state || ""} , Code : ${consignee.stateCode || data.seller.stateCode || ""}`, left + 3, curConsigneeY);
+    curConsigneeY += 3.3;
+    doc.setFont("helvetica", "bold");
+    doc.text(`GST NO. : ${consignee.gstin || "N/A"}`, left + 3, curConsigneeY);
+
+    // Divider line 2 at Y = 66.5
+    doc.line(left, 66.5, midX, 66.5);
+
+    // BOX 3 (Bottom-Left): Buyer (Bill to) (66.5 -> 95)
+    const bTop = 66.5;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7);
+    doc.setTextColor(80, 80, 80);
+    doc.text("Buyer (Bill to)", left + 3, bTop + 3.5);
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8.5);
+    doc.setTextColor(0, 0, 0);
+    doc.text(data.buyer.partyName || "CASH SALE", left + 3, bTop + 7.5);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7.5);
+    const buyerAddr = doc.splitTextToSize(data.buyer.address || "Local", midX - left - 6);
+    doc.text(buyerAddr, left + 3, bTop + 11.2);
+
+    let curBuyerY = bTop + 11.2 + (buyerAddr.length * 3.3);
+    if (data.buyer.mobile) {
+      doc.text(`Mob. ${data.buyer.mobile}`, left + 3, curBuyerY);
+      curBuyerY += 3.3;
+    }
+    doc.text(`STATE NAME : ${data.buyer.state || data.seller.state || ""} , Code : ${data.buyer.stateCode || data.seller.stateCode || ""}`, left + 3, curBuyerY);
+    curBuyerY += 3.3;
+    doc.setFont("helvetica", "bold");
+    doc.text(`GST NO. : ${data.buyer.gstin || "N/A"}`, left + 3, curBuyerY);
+
+    // -------------------------------------------------------------
     // RIGHT COLUMN: Voucher Details Grid (18 -> 95)
-    const colSplit = 152.5; // Split between two right columns
-    
-    // Row 1: Y: 18 -> 27
-    doc.line(colSplit, 18, colSplit, 72);
-    doc.line(midX, 27, right, 27);
+    // -------------------------------------------------------------
+    const colSplit = 148; // Optimal split giving 52mm width for payment terms & references
+
+    // Wrap text & calculate dynamic row heights
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(7.2);
+    const payTermsLines = doc.splitTextToSize(String(data.paymentTerms || "-"), right - colSplit - 4);
+    const delNoteLines = doc.splitTextToSize(String(data.deliveryNote || data.orderNo || "-"), colSplit - midX - 4);
+
+    const r1H = 8.2; // Voucher No. & Dated
+    const r2H = Math.max(8.5, 3.2 + (Math.max(payTermsLines.length, delNoteLines.length) * 3.4) + 1.8); // Delivery Note & Payment Terms
+    const r3H = 8.0; // Reference No. & Other Ref
+    const r4H = 8.0; // Buyer's Order No. & Dated
+    const r5H = 8.0; // Dispatch Doc No. & Delivery Note Date
+    const r6H = 8.2; // Dispatched through & Destination
+
+    const y1 = top;
+    const y1End = y1 + r1H;
+    const y2 = y1End;
+    const y2End = y2 + r2H;
+    const y3 = y2End;
+    const y3End = y3 + r3H;
+    const y4 = y3End;
+    const y4End = y4 + r4H;
+    const y5 = y4End;
+    const y5End = y5 + r5H;
+    const y6 = y5End;
+    const y6End = y6 + r6H;
+    const y7 = y6End;
+
+    // Vertical line between columns (stops cleanly at Row 6, before Terms of Delivery)
+    doc.line(colSplit, top, colSplit, y6End);
+
+    // Horizontal grid divider lines
+    doc.line(midX, y1End, right, y1End);
+    doc.line(midX, y2End, right, y2End);
+    doc.line(midX, y3End, right, y3End);
+    doc.line(midX, y4End, right, y4End);
+    doc.line(midX, y5End, right, y5End);
+    doc.line(midX, y6End, right, y6End);
+
+    // Row 1: Voucher No. & Dated
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(7);
-    doc.text("Voucher No.", midX + 2, 21.5);
+    doc.setFontSize(6.8);
+    doc.setTextColor(80, 80, 80);
+    doc.text("Voucher No.", midX + 2, y1 + 3.0);
     doc.setFont("helvetica", "bold");
     doc.setFontSize(8.5);
-    doc.text(data.orderNo, midX + 2, 25.5);
+    doc.setTextColor(0, 0, 0);
+    doc.text(String(data.orderNo || ""), midX + 2, y1 + 6.8);
 
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(7);
-    doc.text("Dated", colSplit + 2, 21.5);
+    doc.setFontSize(6.8);
+    doc.setTextColor(80, 80, 80);
+    doc.text("Dated", colSplit + 2, y1 + 3.0);
     doc.setFont("helvetica", "bold");
     doc.setFontSize(8.5);
-    doc.text(data.date, colSplit + 2, 25.5);
+    doc.setTextColor(0, 0, 0);
+    doc.text(String(data.date || ""), colSplit + 2, y1 + 6.8);
 
-    // Row 2: Y: 27 -> 36
-    doc.line(midX, 36, right, 36);
+    // Row 2: Delivery Note & Mode/Terms of Payment
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(7);
-    doc.text("Delivery Note", midX + 2, 30.5);
+    doc.setFontSize(6.8);
+    doc.setTextColor(80, 80, 80);
+    doc.text("Delivery Note", midX + 2, y2 + 3.0);
     doc.setFont("helvetica", "bold");
     doc.setFontSize(8);
-    doc.text(data.deliveryNote || data.orderNo, midX + 2, 34.5);
+    doc.setTextColor(0, 0, 0);
+    doc.text(delNoteLines, midX + 2, y2 + 6.8, { lineHeightFactor: 1.15 });
 
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(7);
-    doc.text("Mode/Terms of Payment", colSplit + 2, 30.5);
+    doc.setFontSize(6.8);
+    doc.setTextColor(80, 80, 80);
+    doc.text("Mode/Terms of Payment", colSplit + 2, y2 + 3.0);
     doc.setFont("helvetica", "bold");
+    doc.setFontSize(7.2);
+    doc.setTextColor(0, 0, 0);
+    doc.text(payTermsLines, colSplit + 2, y2 + 6.6, { lineHeightFactor: 1.15 });
+
+    // Row 3: Reference No. & Date. & Other Reference(s)
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(6.8);
+    doc.setTextColor(80, 80, 80);
+    doc.text("Reference No. & Date.", midX + 2, y3 + 3.0);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(0, 0, 0);
+    doc.text(String(data.refNo || "-"), midX + 2, y3 + 6.6);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(6.8);
+    doc.setTextColor(80, 80, 80);
+    doc.text("Other Reference(s)", colSplit + 2, y3 + 3.0);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor(0, 0, 0);
+    doc.text(String(data.otherRef || "-"), colSplit + 2, y3 + 6.6);
+
+    // Row 4: Buyer's Order No. & Dated
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(6.8);
+    doc.setTextColor(80, 80, 80);
+    doc.text("Buyer's Order No.", midX + 2, y4 + 3.0);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(0, 0, 0);
+    doc.text(String(data.buyersOrderNo || data.orderNo || "-"), midX + 2, y4 + 6.6);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(6.8);
+    doc.setTextColor(80, 80, 80);
+    doc.text("Dated", colSplit + 2, y4 + 3.0);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(0, 0, 0);
+    doc.text(String(data.refDate || data.date || "-"), colSplit + 2, y4 + 6.6);
+
+    // Row 5: Dispatch Doc No. & Delivery Note Date
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(6.8);
+    doc.setTextColor(80, 80, 80);
+    doc.text("Dispatch Doc No.", midX + 2, y5 + 3.0);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor(0, 0, 0);
+    doc.text(String(data.dispatchDocNo || "-"), midX + 2, y5 + 6.6);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(6.8);
+    doc.setTextColor(80, 80, 80);
+    doc.text("Delivery Note Date", colSplit + 2, y5 + 3.0);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor(0, 0, 0);
+    doc.text(String(data.deliveryDate || "-"), colSplit + 2, y5 + 6.6);
+
+    // Row 6: Dispatched through & Destination
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(6.8);
+    doc.setTextColor(80, 80, 80);
+    doc.text("Dispatched through", midX + 2, y6 + 3.0);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(0, 0, 0);
+    doc.text(String(data.dispatchThrough || "SafeExpress"), midX + 2, y6 + 6.8);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(6.8);
+    doc.setTextColor(80, 80, 80);
+    doc.text("Destination", colSplit + 2, y6 + 3.0);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(0, 0, 0);
+    doc.text(String(data.destination || "Domestic"), colSplit + 2, y6 + 6.8);
+
+    // Row 7: Terms of Delivery (Spans full width midX -> right)
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(6.8);
+    doc.setTextColor(80, 80, 80);
+    doc.text("Terms of Delivery", midX + 2, y7 + 3.5);
+    doc.setFont("helvetica", "normal");
     doc.setFontSize(7.5);
-    const payTerms = doc.splitTextToSize(data.paymentTerms, right - colSplit - 4);
-    doc.text(payTerms, colSplit + 2, 34);
-
-    // Row 3: Y: 36 -> 45
-    doc.line(midX, 45, right, 45);
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7);
-    doc.text("Reference No. & Date.", midX + 2, 39.5);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(8);
-    doc.text(data.refNo || "-", midX + 2, 43.5);
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7);
-    doc.text("Other Reference(s)", colSplit + 2, 39.5);
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(8);
-    doc.text(data.otherRef || "-", colSplit + 2, 43.5);
-
-    // Row 4: Y: 45 -> 54
-    doc.line(midX, 54, right, 54);
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7);
-    doc.text("Buyer's Order No.", midX + 2, 48.5);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(8);
-    doc.text(data.buyersOrderNo || data.orderNo, midX + 2, 52.5);
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7);
-    doc.text("Dated", colSplit + 2, 48.5);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(8);
-    doc.text(data.refDate || data.date, colSplit + 2, 52.5);
-
-    // Row 5: Y: 54 -> 63
-    doc.line(midX, 63, right, 63);
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7);
-    doc.text("Dispatch Doc No.", midX + 2, 57.5);
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(8);
-    doc.text(data.dispatchDocNo || "-", midX + 2, 61.5);
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7);
-    doc.text("Delivery Note Date", colSplit + 2, 57.5);
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(8);
-    doc.text(data.deliveryDate || "-", colSplit + 2, 61.5);
-
-    // Row 6: Y: 63 -> 72
-    doc.line(midX, 72, right, 72);
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7);
-    doc.text("Dispatched through", midX + 2, 66.5);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(8);
-    doc.text(data.dispatchThrough || "SafeExpress", midX + 2, 70.5);
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7);
-    doc.text("Destination", colSplit + 2, 66.5);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(8);
-    doc.text(data.destination || "Domestic", colSplit + 2, 70.5);
-
-    // Row 7: Y: 72 -> 95 (Terms of Delivery)
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7);
-    doc.text("Terms of Delivery", midX + 2, 76);
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7.5);
+    doc.setTextColor(0, 0, 0);
     const termsDelivery = doc.splitTextToSize(data.termsOfDelivery || "As per agreement.", right - midX - 4);
-    doc.text(termsDelivery, midX + 2, 80);
+    doc.text(termsDelivery, midX + 2, y7 + 7.5, { lineHeightFactor: 1.2 });
 
     // Horizontal line separating Header from Table
     doc.line(left, 95, right, 95);
@@ -635,7 +898,7 @@ export default function SaleOrderPage() {
       doc.text(`Output SGST @ ${half}%`, cols[1].x1 + 2, taxY + 6);
       doc.text(data.totals.sgstAmt.toFixed(2), cols[7].x2 - 2, taxY + 6, { align: "right" });
     } else {
-      doc.text(`Output IGST`, cols[1].x1 + 2, taxY);
+      doc.text(`Output IGST @ ${data.taxRate}%`, cols[1].x1 + 2, taxY);
       doc.setFont("helvetica", "bold");
       doc.text(data.totals.igstAmt.toFixed(2), cols[7].x2 - 2, taxY, { align: "right" });
     }
@@ -672,44 +935,77 @@ export default function SaleOrderPage() {
     // -------------------------------------------------------------
     // SECTION 4: BANK DETAILS, TERMS & SIGNATURE (Y: 220 -> 280)
     // -------------------------------------------------------------
-    const bankSplitX = 110;
+    const bankSplitX = 126; // Generous 116mm for bank details & 74mm for signature
     doc.line(bankSplitX, 220, bankSplitX, bottom);
 
     // Left Box: Bank Details (Top: 220 -> 254)
     doc.setFont("helvetica", "bold");
     doc.setFontSize(8);
-    doc.text("Company's Bank Details", left + 2, 224.5);
+    doc.setTextColor(0, 0, 0);
+    doc.text("Company's Bank Details", left + 2.5, 224.5);
 
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7.5);
-    doc.text(`A/c Holder's Name : ${data.bank.accountName}`, left + 2, 229);
-    doc.text(`Bank Name          : ${data.bank.bankName}`, left + 2, 233);
-    doc.text(`A/c No.            : ${data.bank.accountNo}`, left + 2, 237);
-    doc.text(`Branch & IFS Code  : ${data.bank.branch} & ${data.bank.ifscCode}`, left + 2, 241);
-    doc.text(`Swift Code         : ${data.bank.swiftCode}`, left + 2, 245);
+    const bankBranchStr = data.bank.branch && data.bank.ifscCode
+      ? `${data.bank.branch} & ${data.bank.ifscCode}`
+      : (data.bank.branch || data.bank.ifscCode || "-");
 
-    // Divider in Bank box at Y = 249
-    doc.line(left, 249, bankSplitX, 249);
+    const bankRows = [
+      { label: "A/c Holder's Name", val: data.bank.accountName || "" },
+      { label: "Bank Name", val: data.bank.bankName || "" },
+      { label: "A/c No.", val: data.bank.accountNo || "" },
+      { label: "Branch & IFS Code", val: bankBranchStr }
+    ];
+    if (data.bank.swiftCode && data.bank.swiftCode !== "-") {
+      bankRows.push({ label: "Swift Code", val: data.bank.swiftCode });
+    }
 
-    // Declaration (Bottom: 249 -> 280)
+    let curBankY = 228.8;
+    const labelX = left + 2.5;
+    const colonX = left + 29;
+    const valueX = left + 31;
+    const maxValW = bankSplitX - valueX - 2.5; // ~82.5mm width for values
+
+    bankRows.forEach(r => {
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(7.2);
+      doc.setTextColor(80, 80, 80);
+      doc.text(r.label, labelX, curBankY);
+      doc.text(":", colonX, curBankY);
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(7.2);
+      doc.setTextColor(0, 0, 0);
+      const valLines = doc.splitTextToSize(r.val || "-", maxValW);
+      doc.text(valLines, valueX, curBankY, { lineHeightFactor: 1.15 });
+      curBankY += (valLines.length * 3.4) + 0.6;
+    });
+
+    const dividerY = Math.max(253, curBankY + 1.5);
+    // Divider in Bank box separating Bank Details and Declaration
+    doc.line(left, dividerY, bankSplitX, dividerY);
+
+    // Declaration (Bottom: dividerY -> 280)
     doc.setFont("helvetica", "bold");
     doc.setFontSize(7.5);
-    doc.text("Declaration", left + 2, 253.5);
+    doc.setTextColor(0, 0, 0);
+    doc.text("Declaration", left + 2.5, dividerY + 4.5);
 
     doc.setFont("helvetica", "normal");
     doc.setFontSize(6.8);
+    doc.setTextColor(60, 60, 60);
     const declText = "We declare that this invoice shows the actual price of the goods described and that all particulars are true and correct.";
-    const splitDecl = doc.splitTextToSize(declText, bankSplitX - left - 4);
-    doc.text(splitDecl, left + 2, 258);
+    const splitDecl = doc.splitTextToSize(declText, bankSplitX - left - 5);
+    doc.text(splitDecl, left + 2.5, dividerY + 8.5, { lineHeightFactor: 1.2 });
 
     // Right Box: Signature (Y: 220 -> 280)
     doc.setFont("helvetica", "bold");
     doc.setFontSize(8.5);
+    doc.setTextColor(0, 0, 0);
     doc.text(`for ${data.seller.firmName}`, right - 3, 225.5, { align: "right" });
 
     doc.setFont("helvetica", "normal");
     doc.setFontSize(8);
-    doc.text("Authorised Signatory", right - 3, bottom - 3, { align: "right" });
+    doc.setTextColor(0, 0, 0);
+    doc.text("Authorised Signatory", right - 3, bottom - 3.5, { align: "right" });
 
     // -------------------------------------------------------------
     // BOTTOM FOOTER
@@ -930,50 +1226,108 @@ export default function SaleOrderPage() {
           )}
         </div>
 
-        {/* Seller & Buyer Details (Two Column Layout) */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x divide-slate-200 dark:divide-slate-800">
-          
-          {/* SELLER (CONSIGNOR) */}
-          <div className="p-6 space-y-4">
-            <div className="flex items-center justify-between">
+        {/* SECTION 1: SELLER / MAIN COMPANY (BILLER) */}
+        <div className="p-6 border-t border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/30 space-y-4">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-2">
               <span className="text-xs font-black uppercase tracking-wider text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
-                <Building2 className="w-4 h-4" /> Company / Seller Details
+                <Building2 className="w-4 h-4" /> Main Company / Biller Details (Jo Bill Katega)
               </span>
-              <span className="text-[10px] text-slate-400">Top-Left Box on PDF</span>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">
+                Seller
+              </span>
             </div>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-[10px] text-slate-400 font-medium">My Companies:</span>
+              {savedCompanies.map(c => {
+                const isActive = sellerInfo.firmName?.trim().toLowerCase() === c.firmName?.trim().toLowerCase();
+                return (
+                  <div
+                    key={c.id || c.firmName}
+                    className={`inline-flex items-center rounded-lg border transition-all text-[11px] font-bold overflow-hidden shadow-sm ${
+                      isActive
+                        ? 'bg-blue-600 text-white border-blue-500'
+                        : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-blue-400'
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => handleSelectCompanyPreset(c)}
+                      className="px-2.5 py-1 text-left cursor-pointer flex items-center gap-1"
+                    >
+                      <Building2 className="w-3 h-3" />
+                      {c.firmName}
+                    </button>
+                    {savedCompanies.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={(e) => handleDeleteCompany(c.id, c.firmName, e)}
+                        className={`px-1.5 py-1 text-xs hover:bg-red-500 hover:text-white transition-colors cursor-pointer border-l ${
+                          isActive ? 'border-blue-500 text-blue-200' : 'border-slate-200 dark:border-slate-700 text-slate-400'
+                        }`}
+                        title={`Delete ${c.firmName}`}
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+              
+              <button
+                type="button"
+                onClick={handleAddNewCompany}
+                className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:hover:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 transition-all cursor-pointer flex items-center gap-1 shadow-sm"
+                title="Add a new company"
+              >
+                <Plus className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" /> + Add Company
+              </button>
+            </div>
+          </div>
 
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-3">
               <div>
-                <label className="text-[11px] font-bold text-slate-500 dark:text-slate-400 block mb-1">Company / Firm Name</label>
+                <label className="text-[11px] font-bold text-slate-500 dark:text-slate-400 block mb-1">
+                  Main Company / Firm Name
+                </label>
                 <input
                   type="text"
                   value={sellerInfo.firmName}
-                  onChange={e => setSellerInfo({ ...sellerInfo, firmName: e.target.value })}
-                  placeholder="Reworks"
-                  className="w-full px-3 py-2 rounded-xl text-sm font-bold bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-blue-500"
+                  onChange={e => {
+                    const newName = e.target.value;
+                    setSellerInfo({ ...sellerInfo, firmName: newName });
+                    if (!bankDetails.accountName || bankDetails.accountName === sellerInfo.firmName) {
+                      setBankDetails({ ...bankDetails, accountName: newName });
+                    }
+                  }}
+                  placeholder="AMAN ENTERPRISES"
+                  className="w-full px-3 py-2 rounded-xl text-sm font-bold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
               <div>
-                <label className="text-[11px] font-bold text-slate-500 dark:text-slate-400 block mb-1">Address</label>
+                <label className="text-[11px] font-bold text-slate-500 dark:text-slate-400 block mb-1">Biller Address</label>
                 <input
                   type="text"
                   value={sellerInfo.address}
                   onChange={e => setSellerInfo({ ...sellerInfo, address: e.target.value })}
-                  placeholder="40/3 ITI Colony Sandwa, Naini Industrial Area, Allahabad, Uttar Pradesh, 211010"
-                  className="w-full px-3 py-2 rounded-xl text-xs bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 outline-none"
+                  placeholder="10831, GALI PHOOL WALI, Karol Bagh, Central Delhi, Delhi, 110005"
+                  className="w-full px-3 py-2 rounded-xl text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 outline-none"
                 />
               </div>
+            </div>
 
-              <div className="grid grid-cols-3 gap-2">
+            <div className="space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 <div>
                   <label className="text-[10px] font-bold text-slate-400 block mb-1">Mobile</label>
                   <input
                     type="text"
                     value={sellerInfo.mobile}
                     onChange={e => setSellerInfo({ ...sellerInfo, mobile: e.target.value })}
-                    placeholder="63790 91946"
-                    className="w-full px-2.5 py-1.5 rounded-lg text-xs bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 outline-none"
+                    placeholder="98100 12345"
+                    className="w-full px-2.5 py-2 rounded-xl text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 outline-none"
                   />
                 </div>
                 <div>
@@ -983,15 +1337,15 @@ export default function SaleOrderPage() {
                       type="text"
                       value={sellerInfo.state}
                       onChange={e => setSellerInfo({ ...sellerInfo, state: e.target.value })}
-                      placeholder="Uttar Pradesh"
-                      className="w-3/4 px-2 py-1.5 rounded-lg text-xs bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 outline-none"
+                      placeholder="Delhi"
+                      className="w-3/4 px-2 py-2 rounded-xl text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 outline-none"
                     />
                     <input
                       type="text"
                       value={sellerInfo.stateCode}
                       onChange={e => setSellerInfo({ ...sellerInfo, stateCode: e.target.value })}
-                      placeholder="09"
-                      className="w-1/4 px-1 py-1.5 rounded-lg text-xs text-center font-mono bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 outline-none"
+                      placeholder="07"
+                      className="w-1/4 px-1 py-2 rounded-xl text-xs text-center font-mono bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 outline-none"
                     />
                   </div>
                 </div>
@@ -1001,41 +1355,77 @@ export default function SaleOrderPage() {
                     type="text"
                     value={sellerInfo.gstin}
                     onChange={e => setSellerInfo({ ...sellerInfo, gstin: e.target.value.toUpperCase() })}
-                    placeholder="09DEKPS4410D1ZI"
-                    className="w-full px-2.5 py-1.5 rounded-lg text-xs font-mono uppercase bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 outline-none"
+                    placeholder="07BFMPM7025K1Z2"
+                    className="w-full px-2.5 py-2 rounded-xl text-xs font-mono uppercase bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 outline-none"
                   />
                 </div>
               </div>
+
+              {/* Action Bar for Company */}
+              <div className="pt-1 flex items-center justify-between flex-wrap gap-2">
+                <div className="text-[11px] font-bold text-indigo-700 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800 px-3 py-1.5 rounded-xl">
+                  ✍️ Bottom Box Signature: <strong>for {sellerInfo.firmName || "Company"}</strong>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleSaveMainCompany}
+                  className="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-sm flex items-center gap-1.5 transition-all cursor-pointer"
+                  title="Save this company to presets and set as default"
+                >
+                  <Save className="w-3.5 h-3.5" /> Save to My Companies
+                </button>
+              </div>
             </div>
           </div>
+          {companySavedToast && (
+            <div className="p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 text-xs font-bold flex items-center gap-2">
+              ✓ Company "{sellerInfo.firmName}" saved to your companies list and set as default!
+            </div>
+          )}
+        </div>
 
-          {/* BUYER (CONSIGNEE) */}
-          <div className="p-6 space-y-4">
-            <div className="flex items-center justify-between">
+        {/* SECTION 2: BUYER (BILL TO) & CONSIGNEE (SHIP TO) 2-COLUMN GRID */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x divide-slate-200 dark:divide-slate-800 border-t border-slate-200 dark:border-slate-800">
+          
+          {/* BUYER (BILL TO) CARD */}
+          <div className="p-6 space-y-4 bg-white dark:bg-slate-900/60">
+            <div className="flex items-center justify-between flex-wrap gap-2">
               <span className="text-xs font-black uppercase tracking-wider text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
-                <User className="w-4 h-4" /> Buyer (Bill to / Consignee)
+                <User className="w-4 h-4" /> Buyer (Bill to) Details
               </span>
-              <span className="text-[10px] text-slate-400">Mid-Left Box on PDF</span>
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800">
+                Invoice Recipient
+              </span>
             </div>
 
             <div className="space-y-3">
               <div>
-                <label className="text-[11px] font-bold text-slate-500 dark:text-slate-400 block mb-1">Buyer / Party Name</label>
+                <label className="text-[11px] font-bold text-slate-500 dark:text-slate-400 block mb-1">
+                  Buyer (Bill to) Party Name
+                </label>
                 <input
                   type="text"
                   value={buyerInfo.partyName}
-                  onChange={e => setBuyerInfo({ ...buyerInfo, partyName: e.target.value })}
+                  onChange={e => {
+                    const updated = { ...buyerInfo, partyName: e.target.value };
+                    setBuyerInfo(updated);
+                    if (sameAsBuyer) setConsigneeInfo(prev => ({ ...prev, partyName: e.target.value }));
+                  }}
                   placeholder="Reworks / Party Name"
                   className="w-full px-3 py-2 rounded-xl text-sm font-bold bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500"
                 />
               </div>
 
               <div>
-                <label className="text-[11px] font-bold text-slate-500 dark:text-slate-400 block mb-1">Address</label>
+                <label className="text-[11px] font-bold text-slate-500 dark:text-slate-400 block mb-1">Billing Address</label>
                 <input
                   type="text"
                   value={buyerInfo.address}
-                  onChange={e => setBuyerInfo({ ...buyerInfo, address: e.target.value })}
+                  onChange={e => {
+                    const updated = { ...buyerInfo, address: e.target.value };
+                    setBuyerInfo(updated);
+                    if (sameAsBuyer) setConsigneeInfo(prev => ({ ...prev, address: e.target.value }));
+                  }}
                   placeholder="40/3 ITI Colony Sandwa, Naini Industrial Area, Allahabad, Uttar Pradesh, 211010"
                   className="w-full px-3 py-2 rounded-xl text-xs bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 outline-none"
                 />
@@ -1047,7 +1437,11 @@ export default function SaleOrderPage() {
                   <input
                     type="text"
                     value={buyerInfo.mobile}
-                    onChange={e => setBuyerInfo({ ...buyerInfo, mobile: e.target.value })}
+                    onChange={e => {
+                      const updated = { ...buyerInfo, mobile: e.target.value };
+                      setBuyerInfo(updated);
+                      if (sameAsBuyer) setConsigneeInfo(prev => ({ ...prev, mobile: e.target.value }));
+                    }}
                     placeholder="63790 91946"
                     className="w-full px-2.5 py-1.5 rounded-lg text-xs bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 outline-none"
                   />
@@ -1058,14 +1452,22 @@ export default function SaleOrderPage() {
                     <input
                       type="text"
                       value={buyerInfo.state}
-                      onChange={e => setBuyerInfo({ ...buyerInfo, state: e.target.value })}
+                      onChange={e => {
+                        const updated = { ...buyerInfo, state: e.target.value };
+                        setBuyerInfo(updated);
+                        if (sameAsBuyer) setConsigneeInfo(prev => ({ ...prev, state: e.target.value }));
+                      }}
                       placeholder="Uttar Pradesh"
                       className="w-3/4 px-2 py-1.5 rounded-lg text-xs bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 outline-none"
                     />
                     <input
                       type="text"
                       value={buyerInfo.stateCode}
-                      onChange={e => setBuyerInfo({ ...buyerInfo, stateCode: e.target.value })}
+                      onChange={e => {
+                        const updated = { ...buyerInfo, stateCode: e.target.value };
+                        setBuyerInfo(updated);
+                        if (sameAsBuyer) setConsigneeInfo(prev => ({ ...prev, stateCode: e.target.value }));
+                      }}
                       placeholder="09"
                       className="w-1/4 px-1 py-1.5 rounded-lg text-xs text-center font-mono bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 outline-none"
                     />
@@ -1076,9 +1478,132 @@ export default function SaleOrderPage() {
                   <input
                     type="text"
                     value={buyerInfo.gstin}
-                    onChange={e => setBuyerInfo({ ...buyerInfo, gstin: e.target.value.toUpperCase() })}
+                    onChange={e => {
+                      const updated = { ...buyerInfo, gstin: e.target.value.toUpperCase() };
+                      setBuyerInfo(updated);
+                      if (sameAsBuyer) setConsigneeInfo(prev => ({ ...prev, gstin: e.target.value.toUpperCase() }));
+                    }}
                     placeholder="09DEKPS4410D1ZI"
                     className="w-full px-2.5 py-1.5 rounded-lg text-xs font-mono uppercase bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 outline-none"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* CONSIGNEE (SHIP TO) CARD */}
+          <div className="p-6 space-y-4 bg-slate-50/30 dark:bg-slate-900/40">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <span className="text-xs font-black uppercase tracking-wider text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
+                <Truck className="w-4 h-4 text-amber-500" /> Consignee (Ship to) Details
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleCopyBuyerToConsignee}
+                  className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-amber-100 hover:bg-amber-200 dark:bg-amber-950/60 dark:hover:bg-amber-900/60 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-700 flex items-center gap-1 transition-all cursor-pointer shadow-sm"
+                  title="Copy all Buyer (Bill to) fields into Consignee (Ship to)"
+                >
+                  <Copy className="w-3.5 h-3.5" /> Copy from Buyer
+                </button>
+                <label className="flex items-center gap-1.5 text-[11px] font-bold text-slate-600 dark:text-slate-300 cursor-pointer bg-white dark:bg-slate-800 px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={sameAsBuyer}
+                    onChange={e => {
+                      setSameAsBuyer(e.target.checked);
+                      if (e.target.checked) setConsigneeInfo({ ...buyerInfo });
+                    }}
+                    className="rounded text-amber-600 focus:ring-amber-500"
+                  />
+                  Same as Buyer
+                </label>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="text-[11px] font-bold text-slate-500 dark:text-slate-400 block mb-1">
+                  Consignee (Ship to) Party Name
+                </label>
+                <input
+                  type="text"
+                  value={consigneeInfo.partyName}
+                  onChange={e => {
+                    setConsigneeInfo({ ...consigneeInfo, partyName: e.target.value });
+                    if (sameAsBuyer) setSameAsBuyer(false);
+                  }}
+                  placeholder="Consignee / Delivery Party Name"
+                  className="w-full px-3 py-2 rounded-xl text-sm font-bold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+
+              <div>
+                <label className="text-[11px] font-bold text-slate-500 dark:text-slate-400 block mb-1">
+                  Shipping / Delivery Address
+                </label>
+                <input
+                  type="text"
+                  value={consigneeInfo.address}
+                  onChange={e => {
+                    setConsigneeInfo({ ...consigneeInfo, address: e.target.value });
+                    if (sameAsBuyer) setSameAsBuyer(false);
+                  }}
+                  placeholder="Consignee Delivery Address"
+                  className="w-full px-3 py-2 rounded-xl text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 outline-none"
+                />
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 block mb-1">Mobile</label>
+                  <input
+                    type="text"
+                    value={consigneeInfo.mobile}
+                    onChange={e => {
+                      setConsigneeInfo({ ...consigneeInfo, mobile: e.target.value });
+                      if (sameAsBuyer) setSameAsBuyer(false);
+                    }}
+                    placeholder="98765 43210"
+                    className="w-full px-2.5 py-1.5 rounded-lg text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 block mb-1">State &amp; Code</label>
+                  <div className="flex gap-1">
+                    <input
+                      type="text"
+                      value={consigneeInfo.state}
+                      onChange={e => {
+                        setConsigneeInfo({ ...consigneeInfo, state: e.target.value });
+                        if (sameAsBuyer) setSameAsBuyer(false);
+                      }}
+                      placeholder="State"
+                      className="w-3/4 px-2 py-1.5 rounded-lg text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 outline-none"
+                    />
+                    <input
+                      type="text"
+                      value={consigneeInfo.stateCode}
+                      onChange={e => {
+                        setConsigneeInfo({ ...consigneeInfo, stateCode: e.target.value });
+                        if (sameAsBuyer) setSameAsBuyer(false);
+                      }}
+                      placeholder="09"
+                      className="w-1/4 px-1 py-1.5 rounded-lg text-xs text-center font-mono bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 outline-none"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 block mb-1">GSTIN</label>
+                  <input
+                    type="text"
+                    value={consigneeInfo.gstin}
+                    onChange={e => {
+                      setConsigneeInfo({ ...consigneeInfo, gstin: e.target.value.toUpperCase() });
+                      if (sameAsBuyer) setSameAsBuyer(false);
+                    }}
+                    placeholder="GSTIN/UIN"
+                    className="w-full px-2.5 py-1.5 rounded-lg text-xs font-mono uppercase bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 outline-none"
                   />
                 </div>
               </div>
