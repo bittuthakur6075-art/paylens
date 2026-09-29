@@ -11,9 +11,8 @@ import {
 // Format Indian Currency
 const formatCurrency = (amount) => {
   return new Intl.NumberFormat('en-IN', {
-    style: 'currency',
-    currency: 'INR',
-    minimumFractionDigits: 2
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
   }).format(amount || 0);
 };
 
@@ -52,9 +51,9 @@ const defaultCompanies = [
   {
     id: "aman",
     firmName: "AMAN ENTERPRISES",
-    address: "10831, GALI PHOOL WALI, Karol Bagh, Central Delhi, Delhi, 110005",
-    mobile: "98100 12345",
-    gstin: "07BFMPM7025K1Z2",
+    address: "1827, Gali No. 8, Raja Garden, Cantt Onk,\nDelhi - 110027",
+    mobile: "",
+    gstin: "07BFVPV7083K1Z2",
     state: "Delhi",
     stateCode: "07",
     bank: {
@@ -96,9 +95,9 @@ export default function SaleOrderPage() {
   const [refDate, setRefDate] = useState("17-Mar-26");
   const [dispatchDocNo, setDispatchDocNo] = useState("");
   const [deliveryDate, setDeliveryDate] = useState("");
-  const [dispatchThrough, setDispatchThrough] = useState("SafeExpress");
-  const [destination, setDestination] = useState("New Delhi");
-  const [termsOfDelivery, setTermsOfDelivery] = useState("Goods once sold will not be taken back.");
+  const [dispatchThrough, setDispatchThrough] = useState("—");
+  const [destination, setDestination] = useState("");
+  const [termsOfDelivery, setTermsOfDelivery] = useState("—");
   const [orderNote, setOrderNote] = useState("Note : - 50% Advance and 50% Before Dispatch");
   
   // Saved Seller Companies List
@@ -108,7 +107,7 @@ export default function SaleOrderPage() {
       if (stored) {
         const parsed = JSON.parse(stored);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          const clean = parsed.filter(c => c.firmName && c.firmName.toLowerCase() !== 'reworks');
+          const clean = parsed.filter(c => c.firmName && c.firmName.toLowerCase() !== 'reworks' && !c.address?.includes('PHOOL WALI'));
           if (clean.length > 0) return clean;
         }
       }
@@ -122,7 +121,7 @@ export default function SaleOrderPage() {
       const saved = localStorage.getItem('paylens_main_company');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (parsed.firmName && parsed.firmName.toLowerCase() !== 'reworks') {
+        if (parsed.firmName && parsed.firmName.toLowerCase() !== 'reworks' && !parsed.address?.includes('PHOOL WALI')) {
           return parsed;
         }
       }
@@ -137,7 +136,7 @@ export default function SaleOrderPage() {
       const saved = localStorage.getItem('paylens_main_company');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (parsed.bank && parsed.firmName && parsed.firmName.toLowerCase() !== 'reworks') {
+        if (parsed.bank && parsed.firmName && parsed.firmName.toLowerCase() !== 'reworks' && !parsed.bank?.bankName?.includes('PUNJAB')) {
           return parsed.bank;
         }
       }
@@ -248,6 +247,10 @@ export default function SaleOrderPage() {
     setOtherRef("");
     setDispatchDocNo("");
     setDeliveryDate("");
+    setDispatchThrough("—");
+    setDestination("");
+    setTermsOfDelivery("—");
+    setOrderNote("Note : - 50% Advance and 50% Before Dispatch");
     setBuyerInfo(defaultBuyer);
     setConsigneeInfo(defaultBuyer);
     setSameAsBuyer(true);
@@ -362,19 +365,19 @@ export default function SaleOrderPage() {
     setRefDate("17-Mar-26");
     setDispatchDocNo("");
     setDeliveryDate("");
-    setDispatchThrough("SafeExpress");
-    setDestination("New Delhi");
-    setTermsOfDelivery("Goods once sold will not be taken back.");
+    setDispatchThrough("—");
+    setDestination("");
+    setTermsOfDelivery("—");
     setOrderNote("Note : - 50% Advance and 50% Before Dispatch");
     
     // Main Company that bills / cuts the bill
     setSellerInfo({
       firmName: "AMAN ENTERPRISES",
-      address: "10831, GALI PHOOL WALI, Karol Bagh, Central Delhi, Delhi, 110005",
-      mobile: "98100 12345",
+      address: "1827, Gali No. 8, Raja Garden, Cantt Onk,\nDelhi - 110027",
+      mobile: "",
       state: "Delhi",
       stateCode: "07",
-      gstin: "07BFMPM7025K1Z2"
+      gstin: "07BFVPV7083K1Z2"
     });
     
     // Consignee (Ship to)
@@ -508,7 +511,7 @@ export default function SaleOrderPage() {
   };
 
   // =========================================================================
-  // EXACT TALLY GST SALE ORDER PDF GENERATOR (MATCHING REFERENCE DOCUMENT)
+  // EXACT COMMERCIAL SALES ORDER PDF GENERATOR (MATCHING REFERENCE DOCUMENT)
   // =========================================================================
   const generateAuthenticPDF = (orderData = null, action = 'download') => {
     const data = orderData || {
@@ -542,478 +545,365 @@ export default function SaleOrderPage() {
       format: 'a4'
     });
 
-    const pageWidth = 210;
+
+
+    // Helper to safely wrap text within a maximum width (mm) without horizontal overflow
+    const getWrappedLines = (text, maxWidth) => {
+      if (!text) return [];
+      const rawLines = String(text).split('\n');
+      const allWrapped = [];
+      rawLines.forEach(rl => {
+        const trimmed = rl.trim();
+        if (trimmed) {
+          const wrapped = doc.splitTextToSize(trimmed, maxWidth);
+          if (Array.isArray(wrapped)) {
+            allWrapped.push(...wrapped);
+          } else {
+            allWrapped.push(wrapped);
+          }
+        }
+      });
+      return allWrapped;
+    };
+
+    // Document margins & dimensions (A4: 210 x 297mm)
     const left = 10;
     const right = 200;
     const width = right - left; // 190mm
-    const top = 18;
-    const bottom = 280;
+    const top = 12;
+    const bottom = 282; // 270mm height
 
-    // Document Title: "SALES ORDER" at center top
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(11);
-    doc.setTextColor(0, 0, 0);
-    doc.text("SALES ORDER", pageWidth / 2, 14, { align: "center" });
-
-    // Main Outer Box Border
+    // Single outer bounding rectangle (crisp solid black border)
     doc.setDrawColor(0, 0, 0);
-    doc.setLineWidth(0.3);
+    doc.setLineWidth(0.45);
     doc.rect(left, top, width, bottom - top);
 
     // -------------------------------------------------------------
-    // SECTION 1: SELLER, CONSIGNEE, BUYER & VOUCHER (Y: 18 -> 95)
+    // SECTION 1: HEADER (Y: 12 -> 54)
     // -------------------------------------------------------------
-    const midX = 105;
-    doc.line(midX, top, midX, 95); // Vertical split between Left Details and Voucher details
+    const hBottom = 54;
+    const midX = 110;
 
-    // BOX 1 (Top-Left): Main Billing Company / Seller (18 -> 38)
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(9.5);
+    doc.setLineWidth(0.35);
+    doc.line(midX, top, midX, hBottom);
+    doc.line(left, hBottom, right, hBottom);
+
+    // Left Part: AMAN ENTERPRISES
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(21);
     doc.setTextColor(0, 0, 0);
-    doc.text(data.seller.firmName || "COMPANY NAME", left + 3, top + 4.5);
+    doc.text(data.seller.firmName || "AMAN ENTERPRISES", left + 3.5, top + 8.5);
 
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7.5);
-    const sellerAddr = doc.splitTextToSize(data.seller.address || "", midX - left - 6);
-    doc.text(sellerAddr, left + 3, top + 8.5);
-
-    let curSellerY = top + 8.5 + (sellerAddr.length * 3.4);
-    if (data.seller.mobile) {
-      doc.text(`Mob. ${data.seller.mobile}`, left + 3, curSellerY);
-      curSellerY += 3.4;
-    }
-    doc.text(`GSTIN/UIN: ${data.seller.gstin || "N/A"}`, left + 3, curSellerY);
-    curSellerY += 3.4;
-    doc.text(`State Name : ${data.seller.state || "Delhi"} , Code : ${data.seller.stateCode || "07"}`, left + 3, curSellerY);
-
-    // Divider line 1 at Y = 38
-    doc.line(left, 38, midX, 38);
-
-    // BOX 2 (Mid-Left): Consignee (Ship to) (38 -> 66.5)
-    const cTop = 38;
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7);
-    doc.setTextColor(80, 80, 80);
-    doc.text("Consignee (Ship to)", left + 3, cTop + 3.5);
-
-    const consignee = data.consignee || data.buyer;
-    doc.setFont("helvetica", "bold");
+    doc.setFont('helvetica', 'normal');
     doc.setFontSize(8.5);
-    doc.setTextColor(0, 0, 0);
-    doc.text(consignee.partyName || "CASH SALE", left + 3, cTop + 7.5);
+    const sellerAddrLines = getWrappedLines(data.seller.address || "", midX - left - 7);
+    let curSY = top + 15.0;
+    const sSpacing = sellerAddrLines.length > 2 ? 3.8 : 4.5;
+    sellerAddrLines.slice(0, 3).forEach(l => {
+      doc.text(l, left + 3.5, curSY);
+      curSY += sSpacing;
+    });
 
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7.5);
-    const consigneeAddr = doc.splitTextToSize(consignee.address || "Local", midX - left - 6);
-    doc.text(consigneeAddr, left + 3, cTop + 11.2);
+    curSY = Math.max(curSY, top + 27.5);
+    doc.text(`GSTIN/UIN : ${data.seller.gstin || "07BFVPV7083K1Z2"}`, left + 3.5, curSY);
+    curSY += 6.0;
+    doc.text(`State Name : ${data.seller.state || "Delhi"}, Code : ${data.seller.stateCode || "07"}`, left + 3.5, curSY);
 
-    let curConsigneeY = cTop + 11.2 + (consigneeAddr.length * 3.3);
-    if (consignee.mobile) {
-      doc.text(`Mob. ${consignee.mobile}`, left + 3, curConsigneeY);
-      curConsigneeY += 3.3;
-    }
-    doc.text(`STATE NAME : ${consignee.state || data.seller.state || ""} , Code : ${consignee.stateCode || data.seller.stateCode || ""}`, left + 3, curConsigneeY);
-    curConsigneeY += 3.3;
-    doc.setFont("helvetica", "bold");
-    doc.text(`GST NO. : ${consignee.gstin || "N/A"}`, left + 3, curConsigneeY);
+    // Right Part: SALES ORDER Title Cell
+    const titleH = 9.0;
+    doc.line(midX, top + titleH, right, top + titleH);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(14.5);
+    doc.text('SALES ORDER', (midX + right) / 2, top + 6.8, { align: 'center' });
 
-    // Divider line 2 at Y = 66.5
-    doc.line(left, 66.5, midX, 66.5);
+    // 5 Meta Rows
+    const rH = (hBottom - (top + titleH)) / 5;
+    const vSplit = 148;
 
-    // BOX 3 (Bottom-Left): Buyer (Bill to) (66.5 -> 95)
-    const bTop = 66.5;
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7);
-    doc.setTextColor(80, 80, 80);
-    doc.text("Buyer (Bill to)", left + 3, bTop + 3.5);
+    doc.line(vSplit, top + titleH, vSplit, hBottom);
 
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(8.5);
-    doc.setTextColor(0, 0, 0);
-    doc.text(data.buyer.partyName || "CASH SALE", left + 3, bTop + 7.5);
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7.5);
-    const buyerAddr = doc.splitTextToSize(data.buyer.address || "Local", midX - left - 6);
-    doc.text(buyerAddr, left + 3, bTop + 11.2);
-
-    let curBuyerY = bTop + 11.2 + (buyerAddr.length * 3.3);
-    if (data.buyer.mobile) {
-      doc.text(`Mob. ${data.buyer.mobile}`, left + 3, curBuyerY);
-      curBuyerY += 3.3;
-    }
-    doc.text(`STATE NAME : ${data.buyer.state || data.seller.state || ""} , Code : ${data.buyer.stateCode || data.seller.stateCode || ""}`, left + 3, curBuyerY);
-    curBuyerY += 3.3;
-    doc.setFont("helvetica", "bold");
-    doc.text(`GST NO. : ${data.buyer.gstin || "N/A"}`, left + 3, curBuyerY);
-
-    // -------------------------------------------------------------
-    // RIGHT COLUMN: Voucher Details Grid (18 -> 95)
-    // -------------------------------------------------------------
-    const colSplit = 148; // Optimal split giving 52mm width for payment terms & references
-
-    // Wrap text & calculate dynamic row heights
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(7.2);
-    const payTermsLines = doc.splitTextToSize(String(data.paymentTerms || "-"), right - colSplit - 4);
-    const delNoteLines = doc.splitTextToSize(String(data.deliveryNote || data.orderNo || "-"), colSplit - midX - 4);
-
-    const r1H = 8.2; // Voucher No. & Dated
-    const r2H = Math.max(8.5, 3.2 + (Math.max(payTermsLines.length, delNoteLines.length) * 3.4) + 1.8); // Delivery Note & Payment Terms
-    const r3H = 8.0; // Reference No. & Other Ref
-    const r4H = 8.0; // Buyer's Order No. & Dated
-    const r5H = 8.0; // Dispatch Doc No. & Delivery Note Date
-    const r6H = 8.2; // Dispatched through & Destination
-
-    const y1 = top;
-    const y1End = y1 + r1H;
-    const y2 = y1End;
-    const y2End = y2 + r2H;
-    const y3 = y2End;
-    const y3End = y3 + r3H;
-    const y4 = y3End;
-    const y4End = y4 + r4H;
-    const y5 = y4End;
-    const y5End = y5 + r5H;
-    const y6 = y5End;
-    const y6End = y6 + r6H;
-    const y7 = y6End;
-
-    // Vertical line between columns (stops cleanly at Row 6, before Terms of Delivery)
-    doc.line(colSplit, top, colSplit, y6End);
-
-    // Horizontal grid divider lines
-    doc.line(midX, y1End, right, y1End);
-    doc.line(midX, y2End, right, y2End);
-    doc.line(midX, y3End, right, y3End);
-    doc.line(midX, y4End, right, y4End);
-    doc.line(midX, y5End, right, y5End);
-    doc.line(midX, y6End, right, y6End);
-
-    // Row 1: Voucher No. & Dated
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(6.8);
-    doc.setTextColor(80, 80, 80);
-    doc.text("Voucher No.", midX + 2, y1 + 3.0);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(8.5);
-    doc.setTextColor(0, 0, 0);
-    doc.text(String(data.orderNo || ""), midX + 2, y1 + 6.8);
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(6.8);
-    doc.setTextColor(80, 80, 80);
-    doc.text("Dated", colSplit + 2, y1 + 3.0);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(8.5);
-    doc.setTextColor(0, 0, 0);
-    doc.text(String(data.date || ""), colSplit + 2, y1 + 6.8);
-
-    // Row 2: Delivery Note & Mode/Terms of Payment
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(6.8);
-    doc.setTextColor(80, 80, 80);
-    doc.text("Delivery Note", midX + 2, y2 + 3.0);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(8);
-    doc.setTextColor(0, 0, 0);
-    doc.text(delNoteLines, midX + 2, y2 + 6.8, { lineHeightFactor: 1.15 });
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(6.8);
-    doc.setTextColor(80, 80, 80);
-    doc.text("Mode/Terms of Payment", colSplit + 2, y2 + 3.0);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(7.2);
-    doc.setTextColor(0, 0, 0);
-    doc.text(payTermsLines, colSplit + 2, y2 + 6.6, { lineHeightFactor: 1.15 });
-
-    // Row 3: Reference No. & Date. & Other Reference(s)
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(6.8);
-    doc.setTextColor(80, 80, 80);
-    doc.text("Reference No. & Date.", midX + 2, y3 + 3.0);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(8);
-    doc.setTextColor(0, 0, 0);
-    doc.text(String(data.refNo || "-"), midX + 2, y3 + 6.6);
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(6.8);
-    doc.setTextColor(80, 80, 80);
-    doc.text("Other Reference(s)", colSplit + 2, y3 + 3.0);
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(8);
-    doc.setTextColor(0, 0, 0);
-    doc.text(String(data.otherRef || "-"), colSplit + 2, y3 + 6.6);
-
-    // Row 4: Buyer's Order No. & Dated
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(6.8);
-    doc.setTextColor(80, 80, 80);
-    doc.text("Buyer's Order No.", midX + 2, y4 + 3.0);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(8);
-    doc.setTextColor(0, 0, 0);
-    doc.text(String(data.buyersOrderNo || data.orderNo || "-"), midX + 2, y4 + 6.6);
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(6.8);
-    doc.setTextColor(80, 80, 80);
-    doc.text("Dated", colSplit + 2, y4 + 3.0);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(8);
-    doc.setTextColor(0, 0, 0);
-    doc.text(String(data.refDate || data.date || "-"), colSplit + 2, y4 + 6.6);
-
-    // Row 5: Dispatch Doc No. & Delivery Note Date
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(6.8);
-    doc.setTextColor(80, 80, 80);
-    doc.text("Dispatch Doc No.", midX + 2, y5 + 3.0);
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(8);
-    doc.setTextColor(0, 0, 0);
-    doc.text(String(data.dispatchDocNo || "-"), midX + 2, y5 + 6.6);
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(6.8);
-    doc.setTextColor(80, 80, 80);
-    doc.text("Delivery Note Date", colSplit + 2, y5 + 3.0);
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(8);
-    doc.setTextColor(0, 0, 0);
-    doc.text(String(data.deliveryDate || "-"), colSplit + 2, y5 + 6.6);
-
-    // Row 6: Dispatched through & Destination
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(6.8);
-    doc.setTextColor(80, 80, 80);
-    doc.text("Dispatched through", midX + 2, y6 + 3.0);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(8);
-    doc.setTextColor(0, 0, 0);
-    doc.text(String(data.dispatchThrough || "SafeExpress"), midX + 2, y6 + 6.8);
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(6.8);
-    doc.setTextColor(80, 80, 80);
-    doc.text("Destination", colSplit + 2, y6 + 3.0);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(8);
-    doc.setTextColor(0, 0, 0);
-    doc.text(String(data.destination || "Domestic"), colSplit + 2, y6 + 6.8);
-
-    // Row 7: Terms of Delivery (Spans full width midX -> right)
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(6.8);
-    doc.setTextColor(80, 80, 80);
-    doc.text("Terms of Delivery", midX + 2, y7 + 3.5);
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7.5);
-    doc.setTextColor(0, 0, 0);
-    const termsDelivery = doc.splitTextToSize(data.termsOfDelivery || "As per agreement.", right - midX - 4);
-    doc.text(termsDelivery, midX + 2, y7 + 7.5, { lineHeightFactor: 1.2 });
-
-    // Horizontal line separating Header from Table
-    doc.line(left, 95, right, 95);
-
-    // -------------------------------------------------------------
-    // SECTION 2: ITEMS TABLE (Y: 95 -> 200)
-    // -------------------------------------------------------------
-    const tableHeaderTop = 95;
-    const tableHeaderBottom = 103;
-    const tableBodyBottom = 192; // Table rows end here
-    const tableTotalBottom = 200; // Total row ends here
-
-    doc.line(left, tableHeaderBottom, right, tableHeaderBottom);
-
-    const cols = [
-      { name: "Sl\nNo.", x1: 10, x2: 20 },
-      { name: "Description of Goods", x1: 20, x2: 92 },
-      { name: "HSN/SAC", x1: 92, x2: 110 },
-      { name: "Due on", x1: 110, x2: 128 },
-      { name: "Quantity", x1: 128, x2: 148 },
-      { name: "Rate", x1: 148, x2: 166 },
-      { name: "per", x1: 166, x2: 176 },
-      { name: "Amount", x1: 176, x2: 200 }
+    const metaRows = [
+      { label: 'Voucher No.', val: data.orderNo || '231' },
+      { label: 'Dated', val: data.date || '09-April-26' },
+      { label: "Buyer's Ref. Order No.", val: data.buyersOrderNo || data.orderNo || '231' },
+      { label: 'Dispatch Through', val: (!data.dispatchThrough || data.dispatchThrough === 'SafeExpress') ? '—' : data.dispatchThrough },
+      { label: 'Terms of Delivery', val: (!data.termsOfDelivery || data.termsOfDelivery === 'Goods once sold will not be taken back.') ? '—' : data.termsOfDelivery }
     ];
 
-    // Header Labels
-    doc.setFont("helvetica", "bold");
+    metaRows.forEach((r, idx) => {
+      const cy = top + titleH + (idx * rH);
+      if (idx > 0) doc.line(midX, cy, right, cy);
+      const textY = cy + (rH / 2) + 1.2;
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.text(r.label, midX + 2.5, textY);
+      doc.text(':', vSplit - 3.5, textY);
+      doc.setFont('helvetica', 'bold');
+      doc.text(String(r.val), vSplit + 3, textY);
+    });
+
+    // -------------------------------------------------------------
+    // SECTION 2: CONSIGNEE & BUYER (Y: 54 -> 99)
+    // -------------------------------------------------------------
+    const partiesBottom = 99;
+    const partiesMid = 105;
+
+    doc.line(partiesMid, hBottom, partiesMid, partiesBottom);
+    doc.line(left, partiesBottom, right, partiesBottom);
+
+    // Headers: Consignee & Buyer
+    const pHeaderH = 7.5;
+    doc.line(left, hBottom + pHeaderH, right, hBottom + pHeaderH);
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9.5);
+    doc.text('Consignee (Ship to)', left + 3.5, hBottom + 5.2);
+    doc.text('Buyer (Bill to)', partiesMid + 3.5, hBottom + 5.2);
+
+    const pDetailsY = hBottom + pHeaderH;
+    const pDividerY = 84.5;
+    doc.line(left + 3.5, pDividerY, partiesMid - 3.5, pDividerY);
+    doc.line(partiesMid + 3.5, pDividerY, right - 3.5, pDividerY);
+
+    const consignee = data.consignee || data.buyer;
+    const buyer = data.buyer;
+    const maxPartyW = 82;
+
+    // Consignee details
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9.5);
+    const consigneeName = doc.splitTextToSize(consignee.partyName || "Reworks", maxPartyW);
+    doc.text(consigneeName[0], left + 3.5, pDetailsY + 5.5);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    const consigneeAddrLines = getWrappedLines(consignee.address || "", maxPartyW);
+    let curCY = pDetailsY + 10.0;
+    const cSpacing = consigneeAddrLines.length > 2 ? 3.8 : 4.5;
+    consigneeAddrLines.slice(0, 3).forEach(l => {
+      doc.text(l, left + 3.5, curCY);
+      curCY += cSpacing;
+    });
+    if (consignee.mobile) {
+      doc.text(`Mob. ${consignee.mobile}`, left + 3.5, curCY);
+    }
+
+    doc.text(`GST NO.    : ${consignee.gstin || "09DEKPS4410D1ZI"}`, left + 3.5, pDividerY + 5.0);
+    doc.text(`STATE NAME : ${consignee.state || "Uttar Pradesh"}, Code : ${consignee.stateCode || "09"}`, left + 3.5, pDividerY + 9.5);
+
+    // Buyer details
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9.5);
+    const buyerName = doc.splitTextToSize(buyer.partyName || "Reworks", maxPartyW);
+    doc.text(buyerName[0], partiesMid + 3.5, pDetailsY + 5.5);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    const buyerAddrLines = getWrappedLines(buyer.address || "", maxPartyW);
+    let curBY = pDetailsY + 10.0;
+    const bSpacing = buyerAddrLines.length > 2 ? 3.8 : 4.5;
+    buyerAddrLines.slice(0, 3).forEach(l => {
+      doc.text(l, partiesMid + 3.5, curBY);
+      curBY += bSpacing;
+    });
+    if (buyer.mobile) {
+      doc.text(`Mob. ${buyer.mobile}`, partiesMid + 3.5, curBY);
+    }
+
+    doc.text(`GST NO.    : ${buyer.gstin || "09DEKPS4410D1ZI"}`, partiesMid + 3.5, pDividerY + 5.0);
+    doc.text(`STATE NAME : ${buyer.state || "Uttar Pradesh"}, Code : ${buyer.stateCode || "09"}`, partiesMid + 3.5, pDividerY + 9.5);
+
+    // -------------------------------------------------------------
+    // SECTION 3: ITEMS TABLE (Y: 99 -> 190)
+    // -------------------------------------------------------------
+    const tblTop = 99;
+    const tblHeaderH = 12;
+    const tblHeaderBottom = tblTop + tblHeaderH;
+    const totalTop = 182;
+    const totalBottom = 190;
+
+    doc.line(left, tblHeaderBottom, right, tblHeaderBottom);
+
+    const cols = [
+      { name: 'S.No.', x1: 10, x2: 21 },
+      { name: 'Description of Goods', x1: 21, x2: 74 },
+      { name: 'HSN/SAC\nCode', x1: 74, x2: 93 },
+      { name: 'GST\nRate', x1: 93, x2: 106 },
+      { name: 'Due on', x1: 106, x2: 125 },
+      { name: 'Quantity', x1: 125, x2: 145 },
+      { name: 'Rate', x1: 145, x2: 163 },
+      { name: 'per', x1: 163, x2: 174 },
+      { name: 'Amount', x1: 174, x2: 200 }
+    ];
+
+    doc.setFont('helvetica', 'bold');
     doc.setFontSize(7.5);
     cols.forEach(c => {
-      const midCol = (c.x1 + c.x2) / 2;
-      if (c.name.includes("\n")) {
-        const parts = c.name.split("\n");
-        doc.text(parts[0], midCol, tableHeaderTop + 3.2, { align: "center" });
-        doc.text(parts[1], midCol, tableHeaderTop + 6.8, { align: "center" });
+      const mx = (c.x1 + c.x2) / 2;
+      if (c.name.includes('\n')) {
+        const parts = c.name.split('\n');
+        doc.text(parts[0], mx, tblTop + 4.5, { align: 'center' });
+        doc.text(parts[1], mx, tblTop + 9.0, { align: 'center' });
       } else {
-        doc.text(c.name, midCol, tableHeaderTop + 5.5, { align: "center" });
+        doc.text(c.name, mx, tblTop + 7.0, { align: 'center' });
       }
     });
 
-    // FULL-HEIGHT VERTICAL COLUMN LINES DOWN TO TOTAL ROW
+    // Vertical grid lines down to Total row
     cols.slice(1).forEach(c => {
-      doc.line(c.x1, tableHeaderTop, c.x1, tableTotalBottom);
+      doc.line(c.x1, tblTop, c.x1, totalTop);
     });
 
-    // Table Body Items
-    let itemY = tableHeaderBottom + 6;
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(8);
-
+    // Row Items
+    let itemY = tblHeaderBottom + 7.0;
     data.items.forEach((item, idx) => {
-      doc.text((idx + 1).toString(), (cols[0].x1 + cols[0].x2) / 2, itemY, { align: "center" });
-      
-      doc.setFont("helvetica", "bold");
-      doc.text(item.name, cols[1].x1 + 2, itemY);
-      
-      doc.setFont("helvetica", "normal");
-      doc.text(item.hsn || "-", (cols[2].x1 + cols[2].x2) / 2, itemY, { align: "center" });
-      doc.text(item.dueOn || data.refDate || "-", (cols[3].x1 + cols[3].x2) / 2, itemY, { align: "center" });
-      
-      doc.setFont("helvetica", "bold");
-      doc.text(`${item.qty} ${item.unit}`, cols[4].x2 - 2, itemY, { align: "right" });
-      
-      doc.setFont("helvetica", "normal");
-      doc.text(Number(item.rate).toFixed(2), cols[5].x2 - 2, itemY, { align: "right" });
-      doc.text(item.unit || "pcs", (cols[6].x1 + cols[6].x2) / 2, itemY, { align: "center" });
-      
-      doc.setFont("helvetica", "bold");
-      doc.text(Number(item.qty * item.rate).toFixed(2), cols[7].x2 - 2, itemY, { align: "right" });
-      
-      itemY += 8;
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(9);
+      doc.text((idx + 1).toString(), (cols[0].x1 + cols[0].x2) / 2, itemY, { align: 'center' });
+
+      const maxDescW = cols[1].x2 - cols[1].x1 - 5;
+      const descLines = doc.splitTextToSize(item.name || '', maxDescW);
+      if (descLines.length <= 1) {
+        doc.text(descLines[0] || '', cols[1].x1 + 3, itemY);
+      } else {
+        descLines.forEach((dl, dlIdx) => {
+          doc.text(dl, cols[1].x1 + 3, itemY + (dlIdx * 3.8));
+        });
+      }
+
+      doc.setFont('helvetica', 'normal');
+      doc.text(item.hsn || '', (cols[2].x1 + cols[2].x2) / 2, itemY, { align: 'center' });
+      doc.text(`${item.gstRate || data.taxRate} %`, (cols[3].x1 + cols[3].x2) / 2, itemY, { align: 'center' });
+      doc.text(item.dueOn || data.date || '', (cols[4].x1 + cols[4].x2) / 2, itemY, { align: 'center' });
+
+      doc.setFont('helvetica', 'bold');
+      doc.text(`${item.qty} ${item.unit || 'pcs'}`, (cols[5].x1 + cols[5].x2) / 2, itemY, { align: 'center' });
+      doc.setFont('helvetica', 'normal');
+      doc.text(Number(item.rate || 0).toFixed(2), (cols[6].x1 + cols[6].x2) / 2, itemY, { align: 'center' });
+      doc.text(item.unit || 'pcs', (cols[7].x1 + cols[7].x2) / 2, itemY, { align: 'center' });
+      doc.setFont('helvetica', 'bold');
+      doc.text(Number(item.amount || (item.qty * item.rate)).toLocaleString('en-IN', { minimumFractionDigits: 2 }), cols[8].x2 - 3, itemY, { align: 'right' });
+
+      itemY += Math.max(8, descLines.length * 4.0 + 2);
     });
 
-    // Tax Line inside Table Body (Tally style)
-    const taxY = Math.max(itemY + 14, 150);
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(8);
+    // Mid-Table Tax Row
+    const taxY = Math.max(itemY + 12, tblHeaderBottom + 35);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+
     if (data.taxType === 'cgst_sgst') {
-      const half = (data.taxRate / 2).toFixed(1);
-      doc.text(`Output CGST @ ${half}%`, cols[1].x1 + 2, taxY);
-      doc.text(data.totals.cgstAmt.toFixed(2), cols[7].x2 - 2, taxY, { align: "right" });
-
-      doc.text(`Output SGST @ ${half}%`, cols[1].x1 + 2, taxY + 6);
-      doc.text(data.totals.sgstAmt.toFixed(2), cols[7].x2 - 2, taxY + 6, { align: "right" });
+      const halfRate = (data.taxRate / 2).toFixed(0);
+      doc.text(`CGST @ ${halfRate}%`, (cols[1].x1 + cols[1].x2) / 2, taxY, { align: 'center' });
+      doc.text(data.totals.cgstAmt.toLocaleString('en-IN', { minimumFractionDigits: 2 }), cols[8].x2 - 3, taxY, { align: 'right' });
+      
+      doc.text(`SGST @ ${halfRate}%`, (cols[1].x1 + cols[1].x2) / 2, taxY + 6, { align: 'center' });
+      doc.text(data.totals.sgstAmt.toLocaleString('en-IN', { minimumFractionDigits: 2 }), cols[8].x2 - 3, taxY + 6, { align: 'right' });
     } else {
-      doc.text(`Output IGST @ ${data.taxRate}%`, cols[1].x1 + 2, taxY);
-      doc.setFont("helvetica", "bold");
-      doc.text(data.totals.igstAmt.toFixed(2), cols[7].x2 - 2, taxY, { align: "right" });
+      doc.text(`IGST @ ${data.taxRate}%`, (cols[1].x1 + cols[1].x2) / 2, taxY, { align: 'center' });
+      doc.text(data.totals.igstAmt.toLocaleString('en-IN', { minimumFractionDigits: 2 }), cols[8].x2 - 3, taxY, { align: 'right' });
     }
 
-    // TOTAL ROW (Y: 192 -> 200)
-    doc.line(left, tableBodyBottom, right, tableBodyBottom);
-    doc.line(left, tableTotalBottom, right, tableTotalBottom);
+    // TOTAL ROW
+    doc.line(left, totalTop, right, totalTop);
+    doc.line(left, totalBottom, right, totalBottom);
 
-    doc.setFont("helvetica", "bold");
+    // Total row vertical lines
+    doc.line(cols[5].x1, totalTop, cols[5].x1, totalBottom);
+    doc.line(cols[5].x2, totalTop, cols[5].x2, totalBottom);
+    doc.line(cols[8].x1, totalTop, cols[8].x1, totalBottom);
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11.5);
+    doc.text('Total', (cols[0].x1 + cols[4].x2) / 2, totalTop + 5.8, { align: 'center' });
+    doc.setFontSize(9);
+    doc.text(`${data.totals.totalQty} pcs`, (cols[5].x1 + cols[5].x2) / 2, totalTop + 5.5, { align: 'center' });
+
+    doc.setFontSize(10.5);
+    const grandStr = data.totals.grandTotal.toLocaleString('en-IN', { minimumFractionDigits: 2 });
+    doc.text(grandStr, cols[8].x2 - 3, totalTop + 5.5, { align: 'right' });
+
+    // -------------------------------------------------------------
+    // SECTION 4: AMOUNT CHARGEABLE IN WORDS (Y: 190 -> 206)
+    // -------------------------------------------------------------
+    const wordsY = 190;
+    const wordsBottom = 206;
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.8);
+    doc.text('Amount Chargeable (in words)', left + 3, wordsY + 4.5);
+    doc.text('E. & O.E', right - 3, wordsY + 4.5, { align: 'right' });
+
+    doc.line(left, wordsY + 6.5, right, wordsY + 6.5);
+    doc.setFontSize(9.8);
+    doc.text(data.totals.amountInWords, left + 3, wordsY + 12.5);
+
+    doc.line(left, wordsBottom, right, wordsBottom);
+
+    // -------------------------------------------------------------
+    // SECTION 5: BOTTOM (NOTE, DECLARATION, BANK & SIGNATURE)
+    // -------------------------------------------------------------
+    const bMidX = 108;
+    doc.line(bMidX, wordsBottom, bMidX, bottom);
+
+    // Left Part: Note & Declaration
+    doc.setFont('helvetica', 'bold');
     doc.setFontSize(8.5);
-    doc.text("Total", cols[1].x2 - 3, tableBodyBottom + 5.5, { align: "right" });
-    doc.text(`${data.totals.totalQty} pcs`, cols[4].x2 - 2, tableBodyBottom + 5.5, { align: "right" });
-    doc.text(`INR ${data.totals.grandTotal.toFixed(2)}`, cols[7].x2 - 2, tableBodyBottom + 5.5, { align: "right" });
+    doc.text('Note : - ', left + 3, wordsBottom + 19);
+    doc.setFont('helvetica', 'normal');
+    doc.text(data.orderNote?.replace(/^Note\s*:\s*-\s*/i, '') || '50% Advance and 50% Before Dispatch', left + 18, wordsBottom + 19);
 
-    // -------------------------------------------------------------
-    // SECTION 3: AMOUNT IN WORDS & NOTE (Y: 200 -> 218)
-    // -------------------------------------------------------------
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7.5);
-    doc.text("Amount Chargeable (in words)", left + 2, 204.5);
+    const decLine = 248;
+    doc.line(left, decLine, bMidX, decLine);
 
-    doc.setFont("helvetica", "bold");
+    doc.setFont('helvetica', 'bold');
     doc.setFontSize(8.5);
-    doc.text(data.totals.amountInWords, left + 2, 209);
+    doc.text('Declaration', left + 3, decLine + 5.5);
 
-    doc.line(left, 212, right, 212);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.2);
+    const decMsg = 'We declare that this order shows the actual price of the goods described and that all particulars are true and correct.';
+    doc.text(doc.splitTextToSize(decMsg, bMidX - left - 6), left + 3, decLine + 10);
 
-    doc.setFont("helvetica", "bold");
+    // Right Part: Bank Details Box (with subtle double border at top)
+    doc.line(bMidX, wordsBottom + 1.6, right, wordsBottom + 1.6);
+
+    doc.setFont('helvetica', 'bold');
     doc.setFontSize(8);
-    doc.text(data.orderNote || "Note : - 50% Advance and 50% Before Dispatch", left + 2, 216.5);
+    doc.text('Bank Details (for Payment)', bMidX + 3, wordsBottom + 6.0);
+    doc.line(bMidX, wordsBottom + 8.2, right, wordsBottom + 8.2);
 
-    doc.line(left, 220, right, 220);
-
-    // -------------------------------------------------------------
-    // SECTION 4: BANK DETAILS, TERMS & SIGNATURE (Y: 220 -> 280)
-    // -------------------------------------------------------------
-    const bankSplitX = 126; // Generous 116mm for bank details & 74mm for signature
-    doc.line(bankSplitX, 220, bankSplitX, bottom);
-
-    // Left Box: Bank Details (Top: 220 -> 254)
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(8);
-    doc.setTextColor(0, 0, 0);
-    doc.text("Company's Bank Details", left + 2.5, 224.5);
-
-    const bankBranchStr = data.bank.branch && data.bank.ifscCode
-      ? `${data.bank.branch} & ${data.bank.ifscCode}`
-      : (data.bank.branch || data.bank.ifscCode || "-");
-
-    const bankRows = [
-      { label: "A/c Holder's Name", val: data.bank.accountName || "" },
-      { label: "Bank Name", val: data.bank.bankName || "" },
-      { label: "A/c No.", val: data.bank.accountNo || "" },
-      { label: "Branch & IFS Code", val: bankBranchStr }
+    const bankList = [
+      { label: 'Account Name', val: data.bank.accountName || 'Aman Enterprises' },
+      { label: 'A/C No.', val: data.bank.accountNo || '236711100002209' },
+      { label: 'IFSC Code', val: data.bank.ifscCode || 'UBIN0823678' },
+      { label: 'Swift Code', val: data.bank.swiftCode || 'UBININBBNCC' },
+      { label: 'Bank Name', val: data.bank.bankName || 'UNION BANK OF INDIA' },
+      { label: 'Branch', val: data.bank.branch || 'RAJENDRA NAGAR, NEW DELHI-110060' }
     ];
-    if (data.bank.swiftCode && data.bank.swiftCode !== "-") {
-      bankRows.push({ label: "Swift Code", val: data.bank.swiftCode });
-    }
 
-    let curBankY = 228.8;
-    const labelX = left + 2.5;
-    const colonX = left + 29;
-    const valueX = left + 31;
-    const maxValW = bankSplitX - valueX - 2.5; // ~82.5mm width for values
-
-    bankRows.forEach(r => {
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(7.2);
-      doc.setTextColor(80, 80, 80);
-      doc.text(r.label, labelX, curBankY);
-      doc.text(":", colonX, curBankY);
-
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(7.2);
-      doc.setTextColor(0, 0, 0);
-      const valLines = doc.splitTextToSize(r.val || "-", maxValW);
-      doc.text(valLines, valueX, curBankY, { lineHeightFactor: 1.15 });
-      curBankY += (valLines.length * 3.4) + 0.6;
+    let curBy = wordsBottom + 13.0;
+    bankList.forEach(b => {
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7);
+      doc.text(b.label, bMidX + 3, curBy);
+      doc.text(':', bMidX + 26, curBy);
+      doc.setFont('helvetica', 'bold');
+      doc.text(String(b.val), bMidX + 28, curBy);
+      curBy += 4.5;
     });
 
-    const dividerY = Math.max(253, curBankY + 1.5);
-    // Divider in Bank box separating Bank Details and Declaration
-    doc.line(left, dividerY, bankSplitX, dividerY);
+    doc.line(bMidX, decLine, right, decLine);
 
-    // Declaration (Bottom: dividerY -> 280)
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(7.5);
-    doc.setTextColor(0, 0, 0);
-    doc.text("Declaration", left + 2.5, dividerY + 4.5);
+    // Signature Area
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    doc.text(`For ${data.seller.firmName || "AMAN ENTERPRISES"}`, right - 3, decLine + 7.5, { align: 'right' });
 
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(6.8);
-    doc.setTextColor(60, 60, 60);
-    const declText = "We declare that this invoice shows the actual price of the goods described and that all particulars are true and correct.";
-    const splitDecl = doc.splitTextToSize(declText, bankSplitX - left - 5);
-    doc.text(splitDecl, left + 2.5, dividerY + 8.5, { lineHeightFactor: 1.2 });
-
-    // Right Box: Signature (Y: 220 -> 280)
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(8.5);
-    doc.setTextColor(0, 0, 0);
-    doc.text(`for ${data.seller.firmName}`, right - 3, 225.5, { align: "right" });
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(8);
-    doc.setTextColor(0, 0, 0);
-    doc.text("Authorised Signatory", right - 3, bottom - 3.5, { align: "right" });
-
-    // -------------------------------------------------------------
-    // BOTTOM FOOTER
-    // -------------------------------------------------------------
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7);
-    doc.setTextColor(80, 80, 80);
-    doc.text("This is a Computer Generated Document", pageWidth / 2, 285, { align: "center" });
+    doc.line(right - 55, bottom - 11, right - 3, bottom - 11);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.8);
+    doc.text('Authorized Signatory', right - 29, bottom - 5.5, { align: 'center' });
 
     const safeParty = (data.buyer.partyName || "Party").replace(/[^a-zA-Z0-9]/g, '_');
     const fileName = `SaleOrder_${data.orderNo}_${safeParty}.pdf`;
@@ -1633,8 +1523,8 @@ export default function SaleOrderPage() {
                   <th className="py-3 px-3 w-24 text-center">Due on</th>
                   <th className="py-3 px-3 w-24 text-right">Quantity</th>
                   <th className="py-3 px-3 w-20 text-center">per (Unit)</th>
-                  <th className="py-3 px-3 w-24 text-right">Rate (₹)</th>
-                  <th className="py-3 px-3 w-28 text-right">Amount (₹)</th>
+                  <th className="py-3 px-3 w-24 text-right">Rate</th>
+                  <th className="py-3 px-3 w-28 text-right">Amount</th>
                   <th className="py-3 px-3 w-10 text-center"></th>
                 </tr>
               </thead>
